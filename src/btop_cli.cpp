@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Modified for sitop (fork of btop for Apple Silicon), 2026: see NOTICE.
 
 #include "btop_cli.hpp"
 
@@ -35,9 +36,9 @@ static constexpr auto RESET = "\033[0m"sv;
 
 static void version() noexcept {
 	if constexpr (GIT_COMMIT.empty()) {
-		fmt::println("btop version: {}{}{}", BOLD, Global::Version, RESET);
+		fmt::println("{} version: {}{}{}", Global::Name, BOLD, Global::FullVersion, RESET);
 	} else {
-		fmt::println("btop version: {}{}+{}{}", BOLD, Global::Version, GIT_COMMIT, RESET);
+		fmt::println("{} version: {}{}+{}{}", Global::Name, BOLD, Global::FullVersion, GIT_COMMIT, RESET);
 	}
 }
 
@@ -243,7 +244,7 @@ namespace Cli {
 	}
 
 	void usage() noexcept {
-		fmt::println("{0}Usage:{1} {2}btop{1} [OPTIONS]\n", BOLD_UNDERLINE, RESET, BOLD);
+		fmt::println("{0}Usage:{1} {2}{3}{1} [OPTIONS]\n", BOLD_UNDERLINE, RESET, BOLD, Global::Name);
 	}
 
 	void help() noexcept {

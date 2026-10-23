@@ -12,6 +12,8 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 
+   Modified for sitop (fork of btop for Apple Silicon), 2026: see NOTICE.
+
 indent = tab
 tab-size = 4
 */
@@ -41,9 +43,9 @@ string Fx::reset = reset_base;
 
 namespace Theme {
 
-	fs::path theme_dir;
 	fs::path user_theme_dir;
 	fs::path custom_theme_dir;
+	vector<fs::path> theme_dirs;
 	vector<string> themes;
 	std::unordered_map<string, string> colors;
 	std::unordered_map<string, array<int, 3>> rgbs;
@@ -431,13 +433,20 @@ namespace Theme {
 		themes.push_back("Default");
 		themes.push_back("TTY");
 
-		//? Priority: custom_theme_dir -> user_theme_dir -> theme_dir
-		for (const auto& path : { custom_theme_dir, user_theme_dir, theme_dir } ) {
-			if (path.empty()) continue;
-			for (auto& file : fs::directory_iterator(path)) {
-				if (file.path().extension() == ".theme" and access(file.path().c_str(), R_OK) != -1 and not v_contains(themes, file.path().c_str())) {
-					themes.push_back(file.path().c_str());
-				}
+		//? Priority: custom_theme_dir -> user_theme_dir -> theme_dirs (in order)
+		//? sitop: a theme file name found in more than one directory is listed once, from the first directory
+		vector<fs::path> search_dirs { custom_theme_dir, user_theme_dir };
+		search_dirs.insert(search_dirs.end(), theme_dirs.begin(), theme_dirs.end());
+		for (const auto& path : search_dirs) {
+			std::error_code ec;
+			if (path.empty() or not fs::is_directory(path, ec)) continue;
+			for (auto it = fs::directory_iterator(path, ec); not ec and it != fs::directory_iterator(); it.increment(ec)) {
+				const auto& file = it->path();
+				if (file.extension() != ".theme" or access(file.c_str(), R_OK) == -1) continue;
+				const bool known = std::ranges::any_of(themes.begin() + 2, themes.end(), [&](const string& t) {
+					return fs::path(t).filename() == file.filename();
+				});
+				if (not known) themes.push_back(file.c_str());
 			}
 		}
 

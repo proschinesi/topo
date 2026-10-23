@@ -12,6 +12,8 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 
+   Modified for sitop (fork of btop for Apple Silicon), 2026: see NOTICE.
+
 indent = tab
 tab-size = 4
 */
@@ -95,6 +97,9 @@ namespace Global {
 		{"#000000", "╚═════╝    ╚═╝    ╚═════╝ ╚═╝"},
 	};
 	const string Version = "1.4.7";
+	const string Name = SITOP_NAME;
+	const string SitopVersion = SITOP_VERSION;
+	const string FullVersion = Name + " " + SitopVersion + " (btop " + Version + ")";
 
 	int coreCount;
 	string overlay;
@@ -866,7 +871,7 @@ static auto configure_tty_mode(std::optional<bool> force_tty) {
 			Config::conf_file = cli.config_file.value();
 		} else if (config_dir.has_value()) {
 			Config::conf_dir = config_dir.value();
-			Config::conf_file = Config::conf_dir / "btop.conf";
+			Config::conf_file = Config::conf_dir / (Global::Name + ".conf");
 
 			auto log_file = Config::get_log_file();
 			if (log_file.has_value()) {
@@ -910,17 +915,29 @@ static auto configure_tty_mode(std::optional<bool> force_tty) {
 			Global::self_path = fs::path(buf).remove_filename();
 	}
 #endif
-	if (std::error_code ec; not Global::self_path.empty()) {
-		Theme::theme_dir = fs::canonical(Global::self_path / "../share/btop/themes", ec);
-		if (ec or not fs::is_directory(Theme::theme_dir) or access(Theme::theme_dir.c_str(), R_OK) == -1) Theme::theme_dir.clear();
-	}
-	//? If relative path failed, check two most common absolute paths
-	if (Theme::theme_dir.empty()) {
-		for (auto theme_path : {"/usr/local/share/btop/themes", "/usr/share/btop/themes"}) {
-			if (fs::is_directory(fs::path(theme_path)) and access(theme_path, R_OK) != -1) {
-				Theme::theme_dir = fs::path(theme_path);
-				break;
-			}
+	//? sitop: theme search list after --themes-dir and the user theme dir (~/.config/sitop/themes):
+	//? btop user themes, share/ relative to the binary (btop, then sitop), then common system prefixes.
+	{
+		vector<fs::path> candidates;
+		if (const auto xdg = std::getenv("XDG_CONFIG_HOME"); xdg != nullptr and *xdg != '\0')
+			candidates.push_back(fs::path(xdg) / "btop" / "themes");
+		else if (const auto home = std::getenv("HOME"); home != nullptr and *home != '\0')
+			candidates.push_back(fs::path(home) / ".config" / "btop" / "themes");
+		if (not Global::self_path.empty()) {
+			candidates.push_back(Global::self_path / "../share/btop/themes");
+			candidates.push_back(Global::self_path / ("../share/" + Global::Name + "/themes"));
+		}
+		for (const auto* theme_path : {"/opt/homebrew/share/btop/themes", "/usr/local/share/btop/themes", "/usr/share/btop/themes"})
+			candidates.emplace_back(theme_path);
+
+		std::error_code ec;
+		const auto user_dir = Theme::user_theme_dir.empty() ? fs::path{} : fs::weakly_canonical(Theme::user_theme_dir, ec);
+		for (const auto& candidate : candidates) {
+			ec.clear();
+			auto dir = fs::canonical(candidate, ec);
+			if (ec or not fs::is_directory(dir, ec) or access(dir.c_str(), R_OK) == -1) continue;
+			if (dir == user_dir or v_contains(Theme::theme_dirs, dir)) continue;
+			Theme::theme_dirs.push_back(dir);
 		}
 	}
 

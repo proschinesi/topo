@@ -1,0 +1,16 @@
+sitop
+Copyright 2026 the sitop contributors
+
+sitop is a fork of btop++ (https://github.com/aristocratos/btop),
+Copyright 2021-2026 Jakob P. Liljenberg (aristocratos) and the btop contributors,
+licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The fork starts from btop upstream commit 89fcdf4094e89f8ac215ee6c3ee74aeffb618e86
+(v1.4.7-113-g89fcdf4). Files modified for sitop carry a notice in their header.
+
+Planned parts (not yet included) will be ported or adapted from:
+  - macmon (https://github.com/vladkens/macmon), MIT License,
+    Copyright (c) vladkens
+  - mactop (https://github.com/metaspartan/mactop), MIT License,
+    Copyright (c) Carsen Klock
+The MIT license texts will be added to this file together with the ported code.

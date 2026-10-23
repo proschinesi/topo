@@ -12,6 +12,8 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 
+   Modified for sitop (fork of btop for Apple Silicon), 2026: see NOTICE.
+
 indent = tab
 tab-size = 4
 */
@@ -29,9 +31,11 @@ using std::string;
 using std::vector;
 
 namespace Theme {
-	extern std::filesystem::path theme_dir;
 	extern std::filesystem::path user_theme_dir;
 	extern std::filesystem::path custom_theme_dir;
+	//* sitop: altre cartelle temi in ordine di priorita' (dopo custom e user): temi utente di btop,
+	//* share/ relative all'eseguibile, prefissi di sistema. Solo cartelle esistenti e leggibili.
+	extern vector<std::filesystem::path> theme_dirs;
 
 	//* Contains "Default" and "TTY" at indices 0 and 1, otherwise full paths to theme files
 	extern vector<string> themes;

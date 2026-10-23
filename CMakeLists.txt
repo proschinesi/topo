@@ -2,6 +2,10 @@
 #
 # CMake configuration for btop
 #
+# sitop: fork di btop per Apple Silicon. Il nome del programma vive solo in SITOP_NAME:
+# da qui derivano progetto, eseguibile, define di compilazione (cartella config, log, temi utente).
+# Il build supportato del fork e' CMake (il Makefile upstream resta com'e' e produce bin/btop).
+#
 
 cmake_minimum_required(VERSION 3.25)
 
@@ -10,8 +14,12 @@ if("${CMAKE_CURRENT_SOURCE_DIR}" STREQUAL "${CMAKE_CURRENT_BINARY_DIR}")
   message(FATAL_ERROR "In-source builds are not allowed")
 endif()
 
-project("btop"
-  DESCRIPTION "A monitor of resources"
+set(SITOP_NAME "sitop" CACHE STRING "Nome del programma (eseguibile, config, log)")
+set(SITOP_VERSION "0.1.0")
+
+project("${SITOP_NAME}"
+  VERSION ${SITOP_VERSION}
+  DESCRIPTION "A monitor of resources for Apple Silicon (fork of btop)"
   HOMEPAGE_URL "https://github.com/aristocratos/btop"
   LANGUAGES CXX
 )
@@ -44,7 +52,7 @@ if(BTOP_STATIC AND NOT APPLE)
   set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
 endif()
 
-add_executable(btop src/main.cpp)
+add_executable(${SITOP_NAME} src/main.cpp)
 add_library(libbtop OBJECT
   src/btop.cpp
   src/btop_cli.cpp
@@ -58,11 +66,11 @@ add_library(libbtop OBJECT
   src/btop_tools.cpp
 )
 
-target_link_libraries(btop libbtop)
+target_link_libraries(${SITOP_NAME} libbtop)
 
 if(BTOP_LTO)
   check_ipo_supported()
-  set_target_properties(btop PROPERTIES INTERPROCEDURAL_OPTIMIZATION ON)
+  set_target_properties(${SITOP_NAME} PROPERTIES INTERPROCEDURAL_OPTIMIZATION ON)
   set_target_properties(libbtop PROPERTIES INTERPROCEDURAL_OPTIMIZATION ON)
 endif()
 
@@ -148,6 +156,8 @@ if(HAS_FCF_PROTECTION)
 endif()
 
 target_compile_definitions(libbtop PUBLIC
+  SITOP_NAME="${SITOP_NAME}"
+  SITOP_VERSION="${SITOP_VERSION}"
   FMT_HEADER_ONLY
   _FILE_OFFSET_BITS=64
   $<$<CONFIG:Debug>:_GLIBCXX_ASSERTIONS _LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_DEBUG>
@@ -215,7 +225,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "FreeBSD" OR CMAKE_SYSTEM_NAME STREQUAL "Midni
   # default one since all use the default ones RPATH
   if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     string(REGEX MATCH "^[0-9]+" GCC_VERSION_MAJOR "${CMAKE_CXX_COMPILER_VERSION}")
-    set_target_properties(btop PROPERTIES
+    set_target_properties(${SITOP_NAME} PROPERTIES
       INSTALL_RPATH "/usr/local/lib/gcc${GCC_VERSION_MAJOR}"
       BUILD_WITH_INSTALL_RPATH TRUE
     )
@@ -262,16 +272,16 @@ if(LOWDOWN_EXECUTABLE)
   )
   add_custom_target(generate_manpage ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/btop.1)
   # Install the man page
-  install(FILES "${CMAKE_CURRENT_BINARY_DIR}/btop.1" DESTINATION "share/man/man1")
+  install(FILES "${CMAKE_CURRENT_BINARY_DIR}/btop.1" DESTINATION "share/man/man1" RENAME "${SITOP_NAME}.1")
 else()
   message(STATUS "Command 'lowdown' not found: skipping generating man page btop.1")
 endif()
 
-install(TARGETS btop RUNTIME)
-install(FILES "btop.desktop" DESTINATION "share/applications")
-install(FILES "Img/icon.png" DESTINATION "share/icons/hicolor/48x48/apps" RENAME "btop.png")
-install(FILES "Img/icon.svg" DESTINATION "share/icons/hicolor/scalable/apps" RENAME "btop.svg")
-install(DIRECTORY "themes" DESTINATION "share/btop")
+install(TARGETS ${SITOP_NAME} RUNTIME)
+install(FILES "btop.desktop" DESTINATION "share/applications" RENAME "${SITOP_NAME}.desktop")
+install(FILES "Img/icon.png" DESTINATION "share/icons/hicolor/48x48/apps" RENAME "${SITOP_NAME}.png")
+install(FILES "Img/icon.svg" DESTINATION "share/icons/hicolor/scalable/apps" RENAME "${SITOP_NAME}.svg")
+install(DIRECTORY "themes" DESTINATION "share/${SITOP_NAME}")
 
 include(CTest)
 if(BUILD_TESTING)

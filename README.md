@@ -1,3 +1,8 @@
+> **sitop** e' un fork di [btop++](https://github.com/aristocratos/btop) (Apache-2.0, (c) Jakob P. Liljenberg / aristocratos)
+> orientato ai Mac Apple Silicon: stessa interfaccia, piu' metriche del SoC (cluster CPU, GPU, ANE, potenze) senza sudo.
+> Il build supportato e' CMake (`cmake -B build && cmake --build build`, eseguibile `build/sitop`); config in
+> `~/.config/sitop/sitop.conf`, temi letti anche dalle cartelle di btop. Vedi `NOTICE`. Il resto di questo README e' quello di btop.
+
 # ![btop++](Img/logo.png)
 
 <a href="https://repology.org/project/btop/versions">

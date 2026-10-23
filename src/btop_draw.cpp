@@ -12,6 +12,8 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 
+   Modified for sitop (fork of btop for Apple Silicon), 2026: see NOTICE.
+
 indent = tab
 tab-size = 4
 */
@@ -169,8 +171,10 @@ namespace Draw {
 				}
 				if (++z < Global::Banner_src.size()) banner += Mv::l(ulen(line[1])) + Mv::d(1);
 			}
-			banner += Mv::r(18 - Global::Version.size())
-					+ Theme::c("main_fg") + Fx::b + Fx::i + "v" + Global::Version + Fx::reset;
+			//? sitop: "sitop v0.1.0" al posto di "v1.4.7" (la versione btop resta in --version e nel config)
+			const string version_label = Global::Name + " v" + Global::SitopVersion;
+			banner += Mv::r(std::max(0, 19 - static_cast<int>(version_label.size())))
+					+ Theme::c("main_fg") + Fx::b + Fx::i + version_label + Fx::reset;
 		}
 		if (redraw) return "";
 		return (centered ? Mv::to(y, Term::width / 2 - width / 2) : Mv::to(y, x)) + banner;

@@ -12,6 +12,8 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 
+   Modified for sitop (fork of btop for Apple Silicon), 2026: see NOTICE.
+
 indent = tab
 tab-size = 4
 */
@@ -51,6 +53,15 @@ using std::vector;
 
 using namespace std::literals; // for operator""s
 
+//? sitop: nome e versione del fork. CMake li passa da SITOP_NAME/SITOP_VERSION;
+//? i default servono per il Makefile upstream, che non li definisce.
+#ifndef SITOP_NAME
+#define SITOP_NAME "sitop"
+#endif
+#ifndef SITOP_VERSION
+#define SITOP_VERSION "0.1.0"
+#endif
+
 namespace Tools {
 	class atomic_waiting_lock;
 }
@@ -62,7 +73,10 @@ extern void clean_quit(int sig);
 
 namespace Global {
 	extern const vector<array<string, 2>> Banner_src;
-	extern const string Version;
+	extern const string Version;		// versione btop upstream di partenza
+	extern const string Name;			// SITOP_NAME
+	extern const string SitopVersion;	// SITOP_VERSION
+	extern const string FullVersion;	// "sitop 0.1.0 (btop 1.4.7)"
 	extern atomic<bool> quitting;
 	extern string exit_error_msg;
 	extern atomic<bool> thread_exception;

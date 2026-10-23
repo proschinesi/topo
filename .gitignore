@@ -88,3 +88,8 @@ CMakeUserPresets.json
 
 # CLion
 cmake-build-*
+
+# sitop
+/sitop
+.DS_Store
+.cache/

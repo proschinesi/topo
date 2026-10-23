@@ -12,6 +12,8 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 
+   Modified for sitop (fork of btop for Apple Silicon), 2026: see NOTICE.
+
 indent = tab
 tab-size = 4
 */
@@ -225,9 +227,10 @@ namespace Menu {
 			{"color_theme",
 				"Set color theme.",
 				"",
-				"Choose from all theme files in (usually)",
-				"\"/usr/[local/]share/btop/themes\" and",
-				"\"~/.config/btop/themes\".",
+				"Choose from all theme files in",
+				"\"~/.config/" SITOP_NAME "/themes\",",
+				"\"~/.config/btop/themes\" and (usually)",
+				"\"/opt/homebrew/share/btop/themes\".",
 				"",
 				"\"Default\" for builtin default theme.",
 				"\"TTY\" for builtin 16-color theme.",
