@@ -8,9 +8,31 @@ licensed under the Apache License, Version 2.0 (see LICENSE).
 The fork starts from btop upstream commit 89fcdf4094e89f8ac215ee6c3ee74aeffb618e86
 (v1.4.7-113-g89fcdf4). Files modified for sitop carry a notice in their header.
 
-Planned parts (not yet included) will be ported or adapted from:
+Parts of src/osx/apple_soc*.{hpp,cpp}, src/osx/smc.cpp and tests/apple_soc.cpp are ported
+or adapted from the following projects (CLPC energy report table, DVFS tables and residency
+math, SMC key reading; SMC system/DRAM power keys, PMP bandwidth histograms, ANE floor channels):
+
   - macmon (https://github.com/vladkens/macmon), MIT License,
-    Copyright (c) vladkens
+    Copyright (c) 2024 vladkens
   - mactop (https://github.com/metaspartan/mactop), MIT License,
-    Copyright (c) Carsen Klock
-The MIT license texts will be added to this file together with the ported code.
+    Copyright (c) 2024-2026 Carsen Klock
+
+Both are distributed under the following license text:
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

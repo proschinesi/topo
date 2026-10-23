@@ -285,6 +285,14 @@ namespace Theme {
 					rgbs[name] = hex_to_dec(color);
 				}
 			}
+			//? sitop: pwr_box e' facoltativo nei temi; senza, usa il colore di cpu_box
+			if (source.contains("pwr_box") and source.at("pwr_box").starts_with('#')) {
+				colors["pwr_box"] = hex_to_color(source.at("pwr_box"), t_to_256, "fg");
+				rgbs["pwr_box"] = hex_to_dec(source.at("pwr_box"));
+			} else {
+				colors["pwr_box"] = colors.at("cpu_box");
+				rgbs["pwr_box"] = rgbs.at("cpu_box");
+			}
 			//? Set fallback values for optional colors not defined in theme file
 			if (not colors.contains("meter_bg")) {
 				colors["meter_bg"] = colors.at("inactive_fg");

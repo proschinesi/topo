@@ -12,6 +12,8 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 
+   Modified for sitop (fork of btop for Apple Silicon), 2026: see NOTICE.
+
 indent = tab
 tab-size = 4
 */
@@ -238,7 +240,12 @@ namespace Input {
 				}
 				else if (key.size() == 1 and isint(key)) {
 					auto intKey = std::atoi(key.data());
-				#ifdef GPU_SUPPORT
+				#ifdef SITOP_PWR_BOX
+					//? sitop: su Apple Silicon c'e' una sola GPU; il tasto 6 (gpu1) apre il box pwr
+					static const array<string, 10> boxes = {"", "cpu", "mem", "net", "proc", "gpu0", "pwr", "", "", ""};
+					if (boxes.at(intKey).empty() or (intKey == 5 and Gpu::count < 1))
+						return;
+				#elif defined(GPU_SUPPORT)
 					static const array<string, 10> boxes = {"gpu5", "cpu", "mem", "net", "proc", "gpu0", "gpu1", "gpu2", "gpu3", "gpu4"};
 					if ((intKey == 0 and Gpu::count < 5) or (intKey >= 5 and intKey - 4 > Gpu::count))
 						return;

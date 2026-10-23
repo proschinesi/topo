@@ -75,7 +75,14 @@ if(BTOP_LTO)
 endif()
 
 if(APPLE)
-  target_sources(libbtop PRIVATE src/osx/btop_collect.cpp src/osx/sensors.cpp src/osx/smc.cpp)
+  # sitop: apple_soc (raccolta SoC unica), apple_soc_pure (parti pure, testate), apple_thermal (Objective-C++)
+  enable_language(OBJCXX)
+  set(CMAKE_OBJCXX_STANDARD 23)
+  set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+  target_sources(libbtop PRIVATE
+    src/osx/btop_collect.cpp src/osx/sensors.cpp src/osx/smc.cpp
+    src/osx/apple_soc.cpp src/osx/apple_soc_pure.cpp src/osx/apple_thermal.mm
+  )
 elseif(CMAKE_SYSTEM_NAME STREQUAL "FreeBSD" OR CMAKE_SYSTEM_NAME STREQUAL "MidnightBSD")
   target_sources(libbtop PRIVATE src/freebsd/btop_collect.cpp)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "OpenBSD")
@@ -211,14 +218,13 @@ endif()
 if(APPLE)
   target_link_libraries(libbtop
       $<LINK_LIBRARY:FRAMEWORK,CoreFoundation> $<LINK_LIBRARY:FRAMEWORK,IOKit>
+      $<LINK_LIBRARY:FRAMEWORK,Foundation>
   )
+  # sitop: IOReport serve ad apple_soc anche senza GPU_SUPPORT
+  find_library(IOREPORT_LIB IOReport REQUIRED)
+  target_link_libraries(libbtop ${IOREPORT_LIB})
   if(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64" AND BTOP_GPU)
     target_compile_definitions(libbtop PUBLIC GPU_SUPPORT)
-
-    find_library(IOREPORT_LIB IOReport)
-    if(IOREPORT_LIB)
-      target_link_libraries(libbtop ${IOREPORT_LIB})
-    endif()
   endif()
 elseif(CMAKE_SYSTEM_NAME STREQUAL "FreeBSD" OR CMAKE_SYSTEM_NAME STREQUAL "MidnightBSD")
   # Avoid version mismatch for libstdc++ when a specific version of GCC is installed and not the

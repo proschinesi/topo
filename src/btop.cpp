@@ -51,6 +51,7 @@ tab-size = 4
 	#include <CoreFoundation/CoreFoundation.h>
 	#include <mach-o/dyld.h>
 	#include <limits.h>
+	#include "osx/apple_soc.hpp"
 #endif
 
 #ifdef __NetBSD__
@@ -588,6 +589,21 @@ namespace Runner {
 					}
 				}
 			#endif
+			#ifdef SITOP_PWR_BOX
+				//? sitop: PWR (potenze del SoC)
+				if (v_contains(conf.boxes, "pwr")) {
+					try {
+						if (Global::debug) debug_timer("pwr", collect_begin);
+						auto pwr = Pwr::collect(conf.no_update);
+						if (Global::debug) debug_timer("pwr", draw_begin);
+						if (not pause_output) output += Pwr::draw(pwr, conf.force_redraw, conf.no_update);
+						if (Global::debug) debug_timer("pwr", draw_done);
+					}
+					catch (const std::exception& e) {
+						throw std::runtime_error("Pwr:: -> " + string{e.what()});
+					}
+				}
+			#endif
 				//? MEM
 				if (v_contains(conf.boxes, "mem")) {
 					try {
@@ -860,6 +876,16 @@ static auto configure_tty_mode(std::optional<bool> force_tty) {
 			}
 			return error;
 		}
+	}
+
+	//? sitop: --dump-soc stampa i campioni del SoC in JSON ed esce, senza TUI
+	if (cli.dump_soc) {
+	#ifdef __APPLE__
+		return AppleSoc::dump(cli.dump_count, cli.dump_interval_ms);
+	#else
+		fmt::println(stderr, "--dump-soc is only available on macOS");
+		return 1;
+	#endif
 	}
 
 	Global::debug = cli.debug;

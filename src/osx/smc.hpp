@@ -12,6 +12,8 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 
+   Modified for sitop (fork of btop for Apple Silicon), 2026: see NOTICE.
+
 indent = tab
 tab-size = 4
 */
@@ -24,7 +26,11 @@ tab-size = 4
 #include <IOKit/ps/IOPSKeys.h>
 #include <IOKit/ps/IOPowerSources.h>
 
+#include <optional>
 #include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 #define VERSION "0.01"
 
@@ -104,8 +110,17 @@ namespace Cpu {
 
 		long long getTemp(int core);
 
+		//? sitop: valore numerico decodificato (flt, sp78, fpe2, ui8/16/32), nullopt se assente
+		std::optional<double> readValue(const std::string& key);
+		//? sitop: tipo della chiave ("flt ", "sp78"...), nullopt se la chiave non esiste
+		std::optional<std::string> keyType(const std::string& key);
+		//? sitop: elenco di tutte le chiavi esposte (lento: da usare una volta all'avvio)
+		std::vector<std::string> listKeys();
+
 	   private:
 		kern_return_t SMCReadKey(UInt32Char_t key, SMCVal_t *val);
+		bool readKeyInfo(UInt32 key, SMCKeyData_keyInfo_t& info);
+		std::unordered_map<UInt32, SMCKeyData_keyInfo_t> key_info_cache;
 		long long getSMCTemp(char *key);
 		kern_return_t SMCCall(int index, SMCKeyData_t *inputStructure, SMCKeyData_t *outputStructure);
 

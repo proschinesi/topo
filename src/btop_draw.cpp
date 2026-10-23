@@ -553,6 +553,7 @@ namespace Cpu {
 	int b_columns, b_column_size;
 	int b_x, b_y, b_width, b_height;
 	float max_observed_pwr = 1.0f;
+	bool cluster_headers = true; //? sitop: intestazioni dei livelli Apple Silicon (tolte se manca spazio)
 
 	int graph_up_height, graph_low_height;
 	int graph_up_width, graph_low_width;
@@ -581,8 +582,10 @@ namespace Cpu {
 		bool show_temps = (Config::getB("check_temp") and got_sensors);
 		bool show_watts = (Config::getB("show_cpu_watts") and supports_watts);
 		auto single_graph = Config::getB("cpu_single_graph");
+		//? sitop: con i livelli Apple Silicon la temperatura e' per livello (intestazione), non per core
+		const bool apple_clusters = not cpu.clusters.empty();
 		bool hide_cores = show_temps and (cpu_temp_only or not Config::getB("show_coretemp"));
-		const int extra_width = (hide_cores ? max(6, 6 * b_column_size) : (b_columns == 1 && !show_temps) ? 8 : 0);
+		const int extra_width = apple_clusters ? 0 : (hide_cores ? max(6, 6 * b_column_size) : (b_columns == 1 && !show_temps) ? 8 : 0);
 #if defined(GPU_SUPPORT)
 		const auto& show_gpu_info = Config::getS("show_gpu_info");
 		const bool gpu_always = show_gpu_info == "On";
@@ -913,9 +916,70 @@ namespace Cpu {
 		};
 
 		//? Core text and graphs
+		//? sitop: con i livelli Apple Silicon la sequenza e' [intestazione livello, core del livello...] per ogni livello
+		vector<int> items;
+		if (apple_clusters) {
+			for (size_t k = 0; k < cpu.clusters.size(); k++) {
+				if (cluster_headers) items.push_back(-1 - static_cast<int>(k));
+				for (int c : cpu.clusters[k].cores)
+					if (c >= 0 and c < Shared::coreCount) items.push_back(c);
+			}
+		} else {
+			for (int n = 0; n < Shared::coreCount; n++) items.push_back(n);
+		}
+		const int items_count = static_cast<int>(items.size());
+		const int rows_per_col = static_cast<int>(ceil((double)items_count / b_columns));
+		const int cell_width = b_width / max(1, b_columns);
+
+		//? intestazione di un livello: "S 4.4GHz 81°C", accorciata se la cella e' stretta; "—" se manca il dato
+		auto cluster_header = [&](const cluster_info& c) {
+			//? senza frequenza: "idle" se il livello e' stato fermo (residenza misurata a 0), "—" se il dato manca davvero
+			const bool idle = not c.freq_mhz and c.active_pct and *c.active_pct <= 0.0;
+			const string freq = c.freq_mhz ? (*c.freq_mhz >= 999.5 ? fmt::format("{:.1f}GHz", *c.freq_mhz / 1000.0) : fmt::format("{:.0f}MHz", *c.freq_mhz)) : (idle ? "idle" : "—");
+			string temp_txt;
+			long long temp_c = 0;
+			if (c.temp_c) {
+				temp_c = static_cast<long long>(round(*c.temp_c));
+				const auto [temp, unit] = celsius_to(temp_c, temp_scale);
+				temp_txt = to_string(temp) + unit;
+			} else temp_txt = "—";
+			const int usable = cell_width - 1;
+			string f = freq;
+			//? cella stretta: "2.4G" / "912M"
+			if (c.freq_mhz and static_cast<int>(c.label.size() + 1 + ulen(f)) > usable)
+				f = *c.freq_mhz >= 999.5 ? fmt::format("{:.1f}G", *c.freq_mhz / 1000.0) : fmt::format("{:.0f}M", *c.freq_mhz);
+			const int base_len = static_cast<int>(c.label.size()) + 1 + static_cast<int>(ulen(f));
+			string res = Theme::c("title") + Fx::b + c.label + Fx::ub + ' ' + Theme::c("main_fg") + f;
+			int len = base_len;
+			if (show_temps and usable >= base_len + 1 + static_cast<int>(ulen(temp_txt))) {
+				res += ' ' + (c.temp_c ? Theme::g("temp").at(clamp(temp_c * 100 / safe_cpu_temp_max, 0ll, 100ll)) : Theme::c("inactive_fg")) + temp_txt;
+				len += 1 + static_cast<int>(ulen(temp_txt));
+			} else if (usable < base_len) {
+				res = Theme::c("title") + Fx::b + c.label + Fx::ub;
+				len = static_cast<int>(c.label.size());
+			}
+			return res + string(max(0, usable - len), ' ');
+		};
+
 		int cx = 0, cy = 1, cc = 0, core_width = (b_column_size == 0 ? 2 : 3);
 		if (Shared::coreCount >= 100) core_width++;
-		for (const auto& n : iota(0, Shared::coreCount)) {
+		for (int idx = 0; idx < items_count; idx++) {
+			const int n = items[idx];
+			if (n < 0) {
+				//? un'intestazione non resta da sola in fondo alla colonna
+				if (cy >= min(rows_per_col, max_row - 1) and cy > 1 and cc + 1 < b_columns) {
+					for (; cy <= rows_per_col and cy < max_row; cy++)
+						out += Mv::to(b_y + cy + 1, b_x + cx + 1) + string(max(0, cell_width - 1), ' ') + Theme::c("div_line") + Symbols::v_line;
+					cc++;
+					cy = 1; cx = (b_width / b_columns) * cc;
+				}
+				out += Mv::to(b_y + cy + 1, b_x + cx + 1) + cluster_header(cpu.clusters[-1 - n]) + Theme::c("div_line") + Symbols::v_line;
+				if ((++cy > rows_per_col or cy == max_row) and idx != items_count - 1) {
+					if (++cc >= b_columns) break;
+					cy = 1; cx = (b_width / b_columns) * cc;
+				}
+				continue;
+			}
 			auto enabled = is_cpu_enabled(n);
 			out += Mv::to(b_y + cy + 1, b_x + cx + 1) + Theme::c(enabled ? "main_fg" : "inactive_fg") + (Shared::coreCount < 100 ? Fx::b + 'C' + Fx::ub : "")
 				+ ljust(to_string(n), core_width);
@@ -926,7 +990,7 @@ namespace Cpu {
 			out += enabled ? Theme::g("cpu").at(clamp(safeVal(cpu.core_percent, n).back(), 0ll, 100ll)) : Theme::c("inactive_fg");
 			out += rjust(to_string(safeVal(cpu.core_percent, n).back()), (b_column_size < 2 ? 3 : 4)) + Theme::c(enabled ? "main_fg" : "inactive_fg") + '%';
 
-			if (show_temps and not hide_cores) {
+			if (show_temps and not hide_cores and not apple_clusters) {
 				const auto core_temps = safeVal(cpu.temp, n + 1);
 				if (!core_temps.empty()) {
 					// FIXME: This should be checked during collection and just not be made available with
@@ -955,7 +1019,7 @@ namespace Cpu {
 
 			out += Theme::c("div_line") + Symbols::v_line;
 
-			if ((++cy > ceil((double)Shared::coreCount / b_columns) or cy == max_row) and n != Shared::coreCount - 1) {
+			if ((++cy > rows_per_col or cy == max_row) and idx != items_count - 1) {
 				if (++cc >= b_columns) break;
 				cy = 1; cx = (b_width / b_columns) * cc;
 			}
@@ -1005,7 +1069,11 @@ namespace Cpu {
 				if (gpus[i].supported_functions.mem_total) {
 						out += Theme::c("inactive_fg") + '/' + Theme::c("main_fg") + ljust(floating_humanizer(gpus[i].mem_total, true), 4);
 				}
-				if (show_temps and gpus[i].supported_functions.temp_info) {
+				//? sitop: temperatura GPU assente -> "—", mai 0 °C
+				if (show_temps and gpus[i].supported_functions.temp_info and (gpus[i].temp.empty() or not gpus[i].temp_available)) {
+					out += ' ' + Theme::c("inactive_fg") + rjust("—", b_columns > 1 ? 9 : 4) + Theme::c("main_fg");
+				}
+				else if (show_temps and gpus[i].supported_functions.temp_info) {
 					const auto [temp, unit] = celsius_to(gpus[i].temp.back(), temp_scale);
 					out += ' ';
 					if (b_columns > 1)
@@ -1050,6 +1118,7 @@ namespace Gpu {
 	vector<Draw::Meter> pwr_meter_vec = {};
 	vector<Draw::Meter> enc_meter_vec = {};
 	vector<string> box = {};
+	std::unordered_map<unsigned long, bool> ane_split; //? sitop: grafico grande diviso GPU/ANE
 
     string draw(const gpu_info& gpu, unsigned long index, bool force_redraw, bool data_same) {
 		if (Runner::stopping) return "";
@@ -1085,8 +1154,22 @@ namespace Gpu {
 
 			graph_up_height = single_graph ? b_height_vec[index] : (b_height_vec[index] + 1) / 2;
 			int graph_low_height = single_graph ? 0 : b_height_vec[index] - graph_up_height;
+			//? sitop (Apple Silicon): GPU sopra, ANE sotto (rovesciato, come upload nel box net) con riga divisoria
+			ane_split[index] = gpu.show_ane and b_height_vec[index] >= 3;
+			if (ane_split[index]) {
+				graph_up_height = (b_height_vec[index] - 1 + 1) / 2;
+				graph_low_height = b_height_vec[index] - 1 - graph_up_height;
+			}
 
-			if (gpu.supported_functions.gpu_utilization) {
+			if (gpu.supported_functions.gpu_utilization and ane_split[index]) {
+				graph_upper = Draw::Graph{x + width - b_width - 3, graph_up_height, "cpu", safeVal(gpu.gpu_percent, "gpu-totals"s), graph_symbol, false, true};
+				graph_lower = Draw::Graph{x + width - b_width - 3, graph_low_height, "upload", gpu.ane_percent, graph_symbol, true, true};
+				gpu_meter = Draw::Meter{b_width - (show_temps ? 25 : 12), "cpu"};
+				out += Mv::to(y + graph_up_height + 1, x) + Fx::ub + Theme::c("cpu_box") + Symbols::div_left + Theme::c("div_line")
+					+ Symbols::h_line * (width - b_width - 2) + Symbols::div_right
+					+ Mv::to(y + graph_up_height + 1, x + (width - b_width) / 2 - 5) + Theme::c("graph_text") + "gpu" + Mv::r(1) + "▲▼" + Mv::r(1) + "ane";
+			}
+			else if (gpu.supported_functions.gpu_utilization) {
 				graph_upper = Draw::Graph{x + width - b_width - 3, graph_up_height, "cpu", safeVal(gpu.gpu_percent, "gpu-totals"s), graph_symbol, false, true}; // TODO cpu -> gpu
             	if (not single_graph) {
                 	graph_lower = Draw::Graph{
@@ -1117,14 +1200,20 @@ namespace Gpu {
 		//? Gpu graph, meter & clock speed
 		if (gpu.supported_functions.gpu_utilization) {
 			out += Fx::ub + Mv::to(y + rows_used, x + 1) + graph_upper(safeVal(gpu.gpu_percent, "gpu-totals"s), (data_same or redraw[index]));
-			if (not single_graph)
+			if (ane_split[index])
+				out += Mv::to(y + rows_used + graph_up_height + 1, x + 1) + graph_lower(gpu.ane_percent, (data_same or redraw[index]));
+			else if (not single_graph)
 				out += Mv::to(y + rows_used + graph_up_height, x + 1) + graph_lower(safeVal(gpu.gpu_percent, "gpu-totals"s), (data_same or redraw[index]));
 
 			out += Mv::to(b_y + rows_used, b_x + 1) + Theme::c("main_fg") + Fx::b + "GPU " + gpu_meter(safeVal(gpu.gpu_percent, "gpu-totals"s).back())
 				+ Theme::g("cpu").at(clamp(safeVal(gpu.gpu_percent, "gpu-totals"s).back(), 0ll, 100ll)) + rjust(to_string(safeVal(gpu.gpu_percent, "gpu-totals"s).back()), 5) + Theme::c("main_fg") + '%';
 
 			//? Temperature graph, I assume the device supports utilization if it supports temperature
-			if (show_temps) {
+			//? sitop: temperatura assente -> "—" (mai 0 °C)
+			if (show_temps and (gpu.temp.empty() or not gpu.temp_available)) {
+				out += ' ' + Theme::c("inactive_fg") + graph_bg * 6 + rjust("—", 4) + Theme::c("main_fg") + "  ";
+			}
+			else if (show_temps) {
 				const auto [temp, unit] = celsius_to(gpu.temp.back(), temp_scale);
 				out += ' ' + Theme::c("inactive_fg") + graph_bg * 6 + Mv::l(6) + Theme::g("temp").at(clamp(gpu.temp.back() * 100 / gpu.temp_max, 0ll, 100ll))
 					+ temp_graph(gpu.temp, data_same or redraw[index]);
@@ -1134,7 +1223,15 @@ namespace Gpu {
 			rows_used++;
 		}
 
-		if (gpu.supported_functions.gpu_clock) {
+		if (gpu.show_ane) {
+			//? sitop: frequenza attuale/massima nel titolo, "—" se manca l'attuale
+			string clk = (gpu.gpu_clock_speed > 0 ? to_string(gpu.gpu_clock_speed) : string("—"))
+				+ (gpu.gpu_clock_max > 0 ? '/' + to_string(gpu.gpu_clock_max) : string("")) + " MHz";
+			const int field = 13; //? "1620/1620 MHz"
+			out += Mv::to(b_y, b_x + b_width - field - 3) + Theme::c("div_line") + Symbols::h_line * max(0, field - (int)ulen(clk))
+				+ Symbols::title_left + Fx::b + Theme::c("title") + clk + Fx::ub + Theme::c("div_line") + Symbols::title_right;
+		}
+		else if (gpu.supported_functions.gpu_clock) {
 			string clock_speed_string = to_string(gpu.gpu_clock_speed);
 			out += Mv::to(b_y, b_x + b_width - 12) + Theme::c("div_line") + Symbols::h_line*(5-clock_speed_string.size())
 				+ Symbols::title_left + Fx::b + Theme::c("title") + clock_speed_string + " MHz" + Fx::ub + Theme::c("div_line") + Symbols::title_right;
@@ -1147,6 +1244,28 @@ namespace Gpu {
 				+ fmt::format("{:>5.{}f}", gpu.pwr_usage / 1000.0, gpu.pwr_usage < 10'000 ? 2 : gpu.pwr_usage < 100'000 ? 1 : 0) + Theme::c("main_fg") + 'W';
 			if (gpu.supported_functions.pwr_state and gpu.pwr_state != 32) // NVML_PSTATE_UNKNOWN; unsupported or non-nvidia card
 				out += std::string(" P-state: ") + (gpu.pwr_state > 9 ? "" : " ") + 'P' + Theme::g("cached").at(clamp(gpu.pwr_state, 0ll, 100ll)) + to_string(gpu.pwr_state);
+			rows_used++;
+		}
+
+		//? sitop (Apple Silicon): riga ANE = barra e mini-grafico della potenza in % del fondo scala
+		//? (massimo di sessione, almeno 1 W), watt CLPC e "~x%" = stima d'uso dai floor PMP (non misurata)
+		if (gpu.show_ane) {
+			static vector<Draw::Meter> ane_meters;
+			static vector<Draw::Graph> ane_graphs;
+			static vector<int> ane_widths;
+			if (ane_meters.size() <= index) { ane_meters.resize(index + 1); ane_graphs.resize(index + 1); ane_widths.resize(index + 1, -1); }
+			if (ane_widths[index] != b_width or redraw[index]) {
+				ane_meters[index] = Draw::Meter{max(1, b_width - 25), "upload"};
+				ane_graphs[index] = Draw::Graph{5, 1, "upload", gpu.ane_percent, graph_symbol};
+				ane_widths[index] = b_width;
+			}
+			const long long pct = gpu.ane_percent.empty() ? 0 : gpu.ane_percent.back();
+			const string ane_w = gpu.ane_power_w ? fmt::format("{:.2f}W", *gpu.ane_power_w) : "—";
+			const string ane_use = gpu.ane_usage_estimate_pct ? fmt::format("~{:.0f}%", *gpu.ane_usage_estimate_pct) : "—";
+			out += Mv::to(b_y + rows_used, b_x + 1) + Theme::c("main_fg") + Fx::b + "ANE " + Fx::ub + ane_meters[index](pct)
+				+ (gpu.ane_power_w ? Theme::g("upload").at(clamp(pct, 0ll, 100ll)) : Theme::c("inactive_fg")) + rjust(ane_w, 7)
+				+ ' ' + Theme::c("inactive_fg") + graph_bg * 5 + Mv::l(5) + ane_graphs[index](gpu.ane_percent, data_same or redraw[index])
+				+ Theme::c("inactive_fg") + rjust(ane_use, 5);
 			rows_used++;
 		}
 
@@ -1169,8 +1288,10 @@ namespace Gpu {
 					* (1 + 2*(gpu.supported_functions.mem_total and gpu.supported_functions.mem_used) + 2*gpu.supported_functions.mem_utilization);
 
 				//? Used graph, memory section header, total vram
-				out += Theme::c("div_line") + Symbols::div_left + Symbols::h_line + Symbols::title_left + Fx::b + Theme::c("title") + "vram" + Theme::c("div_line") + Fx::ub + Symbols::title_right
-					+  Symbols::h_line*(b_width/2-8) + Symbols::div_up + Mv::d(offset)+Mv::l(1) + Symbols::div_down + Mv::l(1)+Mv::u(1) + (Symbols::v_line + Mv::l(1)+Mv::u(1))*(offset-1) + Symbols::div_up
+				//? sitop: su Apple Silicon la memoria e' unificata (la stessa RAM di sistema): etichetta "unified"
+				const string mem_label = gpu.unified_memory ? "unified" : "vram";
+				out += Theme::c("div_line") + Symbols::div_left + Symbols::h_line + Symbols::title_left + Fx::b + Theme::c("title") + mem_label + Theme::c("div_line") + Fx::ub + Symbols::title_right
+					+  Symbols::h_line*(b_width/2-4-(int)mem_label.size()) + Symbols::div_up + Mv::d(offset)+Mv::l(1) + Symbols::div_down + Mv::l(1)+Mv::u(1) + (Symbols::v_line + Mv::l(1)+Mv::u(1))*(offset-1) + Symbols::div_up
 					+  Symbols::h_line + Theme::c("title") + "Used:" + Theme::c("div_line")
 					+  Symbols::h_line*(b_width/2+b_width%2-9-used_memory_string.size()) + Theme::c("title") + used_memory_string + Theme::c("div_line") + Symbols::h_line + Symbols::div_right
 					+  Mv::d(1) + Mv::l(b_width/2-1) + mem_used_graph(safeVal(gpu.gpu_percent, "gpu-vram-totals"s), (data_same or redraw[index]))
@@ -1483,11 +1604,108 @@ namespace Mem {
 			if (cy < height - 2) out += Mv::to(y+1+cy, x+1+cx) + divider;
 		}
 
+		//? sitop: banda DRAM sul bordo inferiore della sezione mem. Contatori AMC se il kernel li espone,
+		//? altrimenti la stima PMP con "~" e "(stima)"; senza dato, niente etichetta.
+		if (mem.dram_bw_gbs or mem.dram_bw_estimate_gbs) {
+			const int field = max(0, mem_width - 4);
+			string label;
+			if (mem.dram_bw_gbs)
+				label = fmt::format("DRAM BW {:.1f} GB/s", *mem.dram_bw_gbs);
+			else
+				label = fmt::format("DRAM BW ~{:.1f} GB/s (stima)", *mem.dram_bw_estimate_gbs);
+			if (cmp_greater(ulen(label), field)) label = mem.dram_bw_gbs ? fmt::format("BW {:.1f}G/s", *mem.dram_bw_gbs) : fmt::format("BW ~{:.1f}G/s", *mem.dram_bw_estimate_gbs);
+			if (cmp_less_equal(ulen(label) + 2, field)) {
+				out += Mv::to(y + height - 1, x + 2) + Theme::c("mem_box") + Symbols::title_left_down + Theme::c("title") + Fx::b + label + Fx::ub
+					+ Theme::c("mem_box") + Symbols::title_right_down + Symbols::h_line * max(0, field - (int)ulen(label) - 2);
+			}
+		}
+
 		redraw = false;
 		return out + Fx::reset;
 	}
 
 }
+
+#ifdef SITOP_PWR_BOX
+//? sitop: box pwr, potenze del SoC Apple Silicon: due colonne di tre serie, grafico braille a una riga,
+//? valore attuale e massimo di sessione; lo stato termico nel bordo superiore.
+namespace Pwr {
+	int min_width = 44, min_height = 5;
+	int x = 1, y = 1, width = 0, height = 5;
+	bool shown = false, redraw = true;
+	string box;
+	const array<string, series_count> series_names = {"CPU", "GPU", "ANE", "DRAM", "SYS", "SoC"};
+	array<Draw::Graph, series_count> graphs;
+	array<long long, series_count> graph_scale {}; //? mW: fondo scala dei grafici
+	int cell_width = 0, graph_width = 0;
+
+	//? fondo scala "tondo" (1, 2, 5 x 10^k mW) sopra il massimo visto, cosi' il grafico non si riscala a ogni picco
+	static long long nice_scale(double watts) {
+		const double mw = max(watts * 1000.0, 100.0);
+		double base = std::pow(10.0, std::floor(std::log10(mw)));
+		for (double m : {1.0, 2.0, 5.0, 10.0})
+			if (base * m >= mw) return static_cast<long long>(base * m);
+		return static_cast<long long>(base * 10);
+	}
+
+	static string watts_txt(std::optional<double> w) {
+		if (not w) return "—";
+		return fmt::format("{:.{}f}W", *w, *w < 9.995 ? 2 : *w < 99.95 ? 1 : 0);
+	}
+
+	string draw(const pwr_info& pwr, bool force_redraw, bool data_same) {
+		if (Runner::stopping) return "";
+		if (force_redraw) redraw = true;
+		if (pwr.history[0].empty()) return "";
+		auto tty_mode = Config::getB("tty_mode");
+		auto& graph_symbol = (tty_mode ? "tty" : Config::getS("graph_symbol_cpu"));
+		string out;
+		out.reserve(width * height);
+
+		//? un nuovo massimo oltre il fondo scala ricrea i grafici
+		for (size_t i = 0; i < series_count; i++)
+			if (graph_scale[i] == 0 or pwr.session_max[i] * 1000.0 > graph_scale[i]) { redraw = true; break; }
+
+		if (redraw) {
+			out += box;
+			cell_width = (width - 3) / 2;
+			graph_width = max(0, cell_width - 23);
+			for (size_t i = 0; i < series_count; i++) {
+				graph_scale[i] = nice_scale(pwr.session_max[i]);
+				if (graph_width > 0)
+					graphs[i] = Draw::Graph{graph_width, 1, i == 4 or i == 5 ? "cached" : "cpu", pwr.history[i], graph_symbol, false, false, graph_scale[i]};
+			}
+			out += Mv::to(y + 1, x + 1 + cell_width) + Theme::c("div_line");
+			for (int r = 0; r < 3; r++) out += Mv::to(y + 1 + r, x + 1 + cell_width) + Symbols::v_line;
+		}
+
+		//? stato termico nel bordo superiore, a destra
+		{
+			const string state = pwr.thermal_state.value_or("—");
+			const string txt = "thermal " + state;
+			const int field = 18;
+			out += Mv::to(y, x + width - field - 3) + Theme::c("pwr_box") + Symbols::h_line * max(0, field - (int)ulen(txt) - 2) + Symbols::title_left
+				+ Theme::c(state == "nominal" ? "title" : "hi_fg") + Fx::b + txt + Fx::ub + Theme::c("pwr_box") + Symbols::title_right;
+		}
+
+		for (size_t i = 0; i < series_count; i++) {
+			const int col = static_cast<int>(i) % 2, row = static_cast<int>(i) / 2;
+			const int cx = x + 1 + col * (cell_width + 1);
+			out += Mv::to(y + 1 + row, cx) + Theme::c("main_fg") + Fx::b + ljust(series_names[i], 5) + Fx::ub;
+			if (graph_width > 0) out += graphs[i](pwr.history[i], data_same or redraw);
+			const auto& cur = pwr.current[i];
+			const long long pct = cur ? clamp(static_cast<long long>(*cur * 100000.0 / max(1ll, graph_scale[i])), 0ll, 100ll) : 0;
+			out += (cur ? Theme::g("cached").at(pct) : Theme::c("inactive_fg")) + rjust(watts_txt(cur), 7)
+				+ Theme::c("inactive_fg") + " max" + Theme::c("main_fg") + rjust(pwr.available[i] ? watts_txt(pwr.session_max[i]) : "—", 7)
+				+ string(max(0, cell_width - 5 - graph_width - 18), ' ');
+			if (col == 0) out += Theme::c("div_line") + Symbols::v_line;
+		}
+
+		redraw = false;
+		return out + Fx::reset;
+	}
+}
+#endif
 
 namespace Net {
 	int width_p = 45, height_p = 28;
@@ -2302,6 +2520,10 @@ namespace Draw {
 			using namespace Gpu;
 			total_height += 4 + gpu_b_height_offsets[shown_panels[i]];
 		}
+	#ifdef SITOP_PWR_BOX
+		//? sitop: anche il box pwr sta nella pila sotto la cpu
+		if (boxes.contains("pwr")) Gpu::total_height += Pwr::min_height;
+	#endif
 	#endif
 		Mem::shown = boxes.contains("mem");
 		Net::shown = boxes.contains("net");
@@ -2359,6 +2581,50 @@ namespace Draw {
 			b_height = min(height - 2, (int)ceil((double)Shared::coreCount / b_columns) + 4 + gpus_extra_height);
 		#else
 			b_height = min(height - 2, (int)ceil((double)Shared::coreCount / b_columns) + 4);
+		#endif
+
+		#ifdef __APPLE__
+			if (apple_cluster_count > 0) {
+				//? sitop: core raggruppati per livello, con una riga di intestazione per livello (frequenza, temperatura).
+				//? Le temperature per core non si disegnano (su Apple Silicon non esistono sensori per core):
+				//? celle piu' strette, cosi' tutti i core restano visibili. Un posto in piu' per livello evita
+				//? che un'intestazione resti sola in fondo a una colonna.
+			#ifdef GPU_SUPPORT
+				const int extra_rows = gpus_extra_height;
+			#else
+				const int extra_rows = 0;
+			#endif
+				const int rows = max(1, height - 6 - extra_rows);
+				int avail = width - width / 3;
+				int items = Shared::coreCount + 2 * apple_cluster_count - 1;
+				cluster_headers = true;
+				//? poco spazio: prima si allarga il riquadro dei core (il grafico resta di almeno 8 colonne),
+				//? poi si tolgono le intestazioni; sotto quella soglia alcuni core restano fuori
+				if ((int)ceil((double)items / rows) * 8 >= avail) {
+					avail = max(avail, width - 10);
+					if ((int)ceil((double)items / rows) * 8 >= avail) {
+						cluster_headers = false;
+						items = Shared::coreCount;
+					}
+				}
+				b_columns = max(1, (int)ceil((double)items / rows));
+				if (b_columns * 21 < avail) {
+					b_column_size = 2;
+					b_width = 21 * b_columns - (b_columns - 1);
+				}
+				else if (b_columns * 15 < avail) {
+					b_column_size = 1;
+					b_width = 15 * b_columns - (b_columns - 1);
+				}
+				else {
+					if (b_columns * 8 >= avail) b_columns = max(1, avail / 8);
+					b_column_size = 0;
+					b_width = 8 * b_columns + 1;
+				}
+				//? la riga CPU (misuratore, temperatura, watt) ha bisogno di un minimo di spazio
+				b_width = max(b_width, min(avail, (show_temp ? 34 : 24) + (supports_watts ? 6 : 0)));
+				b_height = min(height - 2, (int)ceil((double)items / b_columns) + 4 + extra_rows);
+			}
 		#endif
 
 			b_x = x + width - b_width - 1;
@@ -2428,6 +2694,22 @@ namespace Draw {
 				box[i] += createBox(b_x_vec[i], b_y_vec[i], b_width, b_height_vec[i], "", false, name.substr(0, b_width-5));
 				b_height_vec[i] = height - 2;
 			}
+		}
+	#endif
+
+	#ifdef SITOP_PWR_BOX
+		//* sitop: box pwr, fascia a tutta larghezza sotto cpu/gpu; conta nell'altezza della pila gpu
+		Pwr::box.clear();
+		Pwr::redraw = true;
+		Pwr::shown = boxes.contains("pwr");
+		if (Pwr::shown) {
+			using namespace Pwr;
+			width = Term::width;
+			height = min_height;
+			x = 1;
+			y = 1 + (cpu_bottom ? 0 : Cpu::shown * Cpu::height) + Gpu::total_height;
+			box = createBox(x, y, width, height, Theme::c("pwr_box"), true, "pwr", "", 6);
+			Gpu::total_height += height;
 		}
 	#endif
 

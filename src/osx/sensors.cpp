@@ -12,6 +12,8 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 
+   Modified for sitop (fork of btop for Apple Silicon), 2026: see NOTICE.
+
 indent = tab
 tab-size = 4
 */
@@ -29,6 +31,8 @@ tab-size = 4
 #include <numeric>
 #include <unordered_map>
 #include <vector>
+
+#include <mach/mach_time.h>
 
 extern "C" {
 typedef struct __IOHIDEvent *IOHIDEventRef;
@@ -176,5 +180,76 @@ long long Cpu::ThermalSensors::getSensors(std::vector<long long>& core_temps) {
 
 	const auto &temps = not acc_temps.empty() ? acc_temps : (not tdie_temps.empty() ? tdie_temps : soc_temps);
 	return avg_to_long(temps);
+}
+
+//? ---- sitop: HidThermal ----
+namespace {
+	uint64_t now_ns() {
+		static mach_timebase_info_data_t tb = {0, 0};
+		if (tb.denom == 0) mach_timebase_info(&tb);
+		return mach_absolute_time() * tb.numer / tb.denom;
+	}
+	std::string product_name(IOHIDServiceClientRef sc) {
+		CFStringRef name = IOHIDServiceClientCopyProperty(sc, CFSTR("Product"));
+		if (not name) return "";
+		char buf[200];
+		std::string n;
+		if (CFStringGetCString(name, buf, sizeof buf, kCFStringEncodingUTF8)) n = buf;
+		CFRelease(name);
+		return n;
+	}
+}
+
+Cpu::HidThermal::HidThermal(std::function<bool(const std::string&)> want, double refresh_s)
+	: want_(std::move(want)), refresh_s_(refresh_s) {
+	auto client = IOHIDEventSystemClientCreate(kCFAllocatorDefault);
+	if (not client) return;
+	CFDictionaryRef match = matching(0xff00, 5);
+	IOHIDEventSystemClientSetMatching(client, match);
+	CFRelease(match);
+	client_ = (void*)client;
+	refresh();
+}
+
+Cpu::HidThermal::~HidThermal() {
+	if (services_) CFRelease((CFTypeRef)services_);
+	if (client_) CFRelease((CFTypeRef)client_);
+}
+
+void Cpu::HidThermal::refresh() {
+	if (not client_) return;
+	selected_.clear();
+	if (services_) { CFRelease((CFTypeRef)services_); services_ = nullptr; }
+	CFArrayRef services = IOHIDEventSystemClientCopyServices((IOHIDEventSystemClientRef)client_);
+	last_refresh_ns_ = now_ns();
+	if (not services) return;
+	services_ = (void*)services;
+	for (CFIndex i = 0; i < CFArrayGetCount(services); i++) {
+		auto sc = (IOHIDServiceClientRef)CFArrayGetValueAtIndex(services, i);
+		if (not sc) continue;
+		auto n = product_name(sc);
+		if (not n.empty() and want_(n)) selected_.emplace_back(n, (void*)sc);
+	}
+}
+
+std::vector<std::pair<std::string, double>> Cpu::HidThermal::read() {
+	std::vector<std::pair<std::string, double>> out;
+	if (not client_) return out;
+	if (static_cast<double>(now_ns() - last_refresh_ns_) / 1e9 > refresh_s_) refresh();
+	out.reserve(selected_.size());
+	for (const auto& [name, sc] : selected_)
+		out.emplace_back(name, getValue((IOHIDServiceClientRef)sc));
+	return out;
+}
+
+std::vector<std::string> Cpu::HidThermal::allNames() {
+	std::vector<std::string> names;
+	if (not services_) return names;
+	auto services = (CFArrayRef)services_;
+	for (CFIndex i = 0; i < CFArrayGetCount(services); i++) {
+		auto sc = (IOHIDServiceClientRef)CFArrayGetValueAtIndex(services, i);
+		if (sc) names.push_back(product_name(sc));
+	}
+	return names;
 }
 #endif

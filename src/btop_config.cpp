@@ -56,6 +56,9 @@ const vector<string> Config::valid_boxes = {
 #ifdef GPU_SUPPORT
 	,"gpu0", "gpu1", "gpu2", "gpu3", "gpu4", "gpu5"
 #endif
+#ifdef SITOP_PWR_BOX
+	,"pwr"
+#endif
 };
 const vector<string> Config::temp_scales = { "celsius", "fahrenheit", "kelvin", "rankine" };
 #ifdef __linux__
@@ -121,7 +124,7 @@ namespace Config {
 
 		{"graph_symbol_proc", 	"# Graph symbol to use for graphs in cpu box, \"default\", \"braille\", \"block\" or \"tty\"."},
 
-		{"shown_boxes", 		"#* Manually set which boxes to show. Available values are \"cpu mem net proc\" and \"gpu0\" through \"gpu5\", separate values with whitespace."},
+		{"shown_boxes", 		"#* Manually set which boxes to show. Available values are \"cpu mem net proc\", \"gpu0\" through \"gpu5\" and \"pwr\" (Apple Silicon power), separate values with whitespace."},
 
 		{"update_ms", 			"#* Update time in milliseconds, recommended 2000 ms or above for better sample times for graphs."},
 
@@ -494,7 +497,7 @@ namespace Config {
 					validError = "Malformatted preset in config value presets!";
 					return false;
 				}
-				if (not is_in(vals.at(0), "cpu", "mem", "net", "proc", "gpu0", "gpu1", "gpu2", "gpu3", "gpu4", "gpu5")) {
+				if (not is_in(vals.at(0), "cpu", "mem", "net", "proc", "gpu0", "gpu1", "gpu2", "gpu3", "gpu4", "gpu5", "pwr")) {
 					validError = "Invalid box name in config value presets!";
 					return false;
 				}

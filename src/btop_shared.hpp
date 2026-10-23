@@ -191,6 +191,16 @@ namespace Gpu {
 
 		gpu_info_supported supported_functions;
 
+		//? sitop (Apple Silicon): frequenza massima DVFS, temperatura presente in questo campione, ANE, memoria unificata
+		unsigned int gpu_clock_max = 0; // MHz, 0 = ignota
+		bool temp_available = true;
+		bool unified_memory = false;
+		bool show_ane = false;
+		std::optional<double> ane_power_w;
+		std::optional<double> ane_usage_estimate_pct;
+		deque<long long> ane_percent;  //? potenza ANE in % di ane_power_scale_w (storico per i grafici)
+		double ane_power_scale_w = 1.0; //? fondo scala: massimo di sessione, almeno 1 W
+
 		// vector<proc_info> graphics_processes = {}; // TODO
 		// vector<proc_info> compute_processes = {};
 	};
@@ -228,6 +238,19 @@ namespace Cpu {
 	extern vector<string> available_sensors;
 	extern tuple<int, float, long, string> current_bat;
 	extern std::optional<std::string> container_engine;
+	//? sitop: numero di livelli Apple Silicon (0 altrove): il box cpu raggruppa i core per livello
+	extern int apple_cluster_count;
+
+	//? sitop: un livello di prestazione Apple Silicon (Efficiency/Performance/Super), riempito solo su macOS
+	struct cluster_info {
+		string name;
+		string label;
+		vector<int> cores;
+		std::optional<double> freq_mhz;
+		std::optional<double> freq_max_mhz;
+		std::optional<double> active_pct;
+		std::optional<double> temp_c;
+	};
 
 	struct cpu_info {
 		std::unordered_map<string, deque<long long>> cpu_percent = {
@@ -249,6 +272,7 @@ namespace Cpu {
 		array<double, 3> load_avg;
 		float usage_watts = 0;
 		std::optional<std::vector<std::int32_t>> active_cpus;
+		vector<cluster_info> clusters; //? sitop: vuoto fuori da Apple Silicon
 	};
 
 	//* Collect cpu stats and temperatures
@@ -310,6 +334,9 @@ namespace Mem {
 			{"swap_total", {}}, {"swap_used", {}}, {"swap_free", {}}};
 		std::unordered_map<string, disk_info> disks;
 		vector<string> disks_order;
+		//? sitop (Apple Silicon): banda DRAM da contatori AMC, oppure stima PMP
+		std::optional<double> dram_bw_gbs;
+		std::optional<double> dram_bw_estimate_gbs;
 	};
 
 	//?* Get total system memory
@@ -322,6 +349,31 @@ namespace Mem {
 	string draw(const mem_info& mem, bool force_redraw = false, bool data_same = false);
 
 }
+
+//? sitop: box pwr (potenze del SoC Apple Silicon), solo dove c'e' la raccolta AppleSoc
+#if defined(__APPLE__) && defined(GPU_SUPPORT)
+#define SITOP_PWR_BOX 1
+namespace Pwr {
+	extern string box;
+	extern int x, y, width, height, min_width, min_height;
+	extern bool shown, redraw;
+
+	//? serie: cpu, gpu, ane, dram, sistema (SMC), totale (cpu+gpu+ane+dram)
+	constexpr size_t series_count = 6;
+	extern const array<string, series_count> series_names;
+
+	struct pwr_info {
+		array<deque<long long>, series_count> history; //? mW, per i grafici
+		array<std::optional<double>, series_count> current; //? W, assente = "—"
+		array<double, series_count> session_max {};      //? W
+		array<bool, series_count> available {};          //? la serie e' mai arrivata
+		std::optional<string> thermal_state;
+	};
+
+	auto collect(bool no_update = false) -> pwr_info&;
+	string draw(const pwr_info& pwr, bool force_redraw = false, bool data_same = false);
+}
+#endif
 
 namespace Net {
 	extern string box;

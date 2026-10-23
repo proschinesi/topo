@@ -12,6 +12,8 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 
+   Modified for sitop (fork of btop for Apple Silicon), 2026: see NOTICE.
+
 indent = tab
 tab-size = 4
 */
@@ -52,6 +54,7 @@ tab-size = 4
 #include "sensors.hpp"
 #endif
 #include "smc.hpp"
+#include "apple_soc.hpp"
 #endif
 
 #include <cmath>
@@ -71,48 +74,6 @@ tab-size = 4
 #include "../btop_shared.hpp"
 #include "../btop_tools.hpp"
 
-#if defined(GPU_SUPPORT) && defined(__APPLE__) && defined(__arm64__)
-#include <dlfcn.h>
-#include <mach/mach_time.h>
-
-//? IOReport C function declarations for Apple Silicon GPU metrics
-extern "C" {
-	typedef struct IOReportSubscription* IOReportSubscriptionRef;
-
-	CFDictionaryRef IOReportCopyChannelsInGroup(CFStringRef group, CFStringRef subgroup,
-		uint64_t a, uint64_t b, uint64_t c);
-	void IOReportMergeChannels(CFDictionaryRef a, CFDictionaryRef b, CFTypeRef cfnull);
-	IOReportSubscriptionRef IOReportCreateSubscription(void* a, CFMutableDictionaryRef b,
-		CFMutableDictionaryRef* c, uint64_t d, CFTypeRef cfnull);
-	CFDictionaryRef IOReportCreateSamples(IOReportSubscriptionRef sub,
-		CFMutableDictionaryRef chan, CFTypeRef cfnull);
-	CFDictionaryRef IOReportCreateSamplesDelta(CFDictionaryRef a, CFDictionaryRef b, CFTypeRef cfnull);
-	CFStringRef IOReportChannelGetGroup(CFDictionaryRef item);
-	CFStringRef IOReportChannelGetSubGroup(CFDictionaryRef item);
-	CFStringRef IOReportChannelGetChannelName(CFDictionaryRef item);
-	int64_t IOReportSimpleGetIntegerValue(CFDictionaryRef item, int32_t idx);
-	CFStringRef IOReportChannelGetUnitLabel(CFDictionaryRef item);
-	int32_t IOReportStateGetCount(CFDictionaryRef item);
-	CFStringRef IOReportStateGetNameForIndex(CFDictionaryRef item, int32_t idx);
-	int64_t IOReportStateGetResidency(CFDictionaryRef item, int32_t idx);
-
-	//? IOHIDEvent declarations for GPU temperature
-	typedef struct __IOHIDEvent* IOHIDEventRef;
-	typedef struct __IOHIDServiceClient* IOHIDServiceClientRef;
-	typedef struct __IOHIDEventSystemClient* IOHIDEventSystemClientRef;
-	#ifdef __LP64__
-	typedef double IOHIDFloat;
-	#else
-	typedef float IOHIDFloat;
-	#endif
-	IOHIDEventSystemClientRef IOHIDEventSystemClientCreate(CFAllocatorRef allocator);
-	int IOHIDEventSystemClientSetMatching(IOHIDEventSystemClientRef client, CFDictionaryRef match);
-	CFArrayRef IOHIDEventSystemClientCopyServices(IOHIDEventSystemClientRef client);
-	IOHIDEventRef IOHIDServiceClientCopyEvent(IOHIDServiceClientRef sc, int64_t type, int32_t a, int64_t b);
-	CFStringRef IOHIDServiceClientCopyProperty(IOHIDServiceClientRef service, CFStringRef property);
-	IOHIDFloat IOHIDEventGetFloatValue(IOHIDEventRef event, int32_t field);
-}
-#endif // GPU_SUPPORT
 
 #if __MAC_OS_X_VERSION_MIN_REQUIRED < 120000
 #define kIOMainPortDefault kIOMasterPortDefault
@@ -216,22 +177,7 @@ namespace Gpu {
 		template <bool is_init>
 		bool collect(gpu_info* gpus_slice);
 
-		//? IOReport subscription state
-		IOReportSubscriptionRef ior_sub = nullptr;
-		CFMutableDictionaryRef ior_chan = nullptr;
-		CFDictionaryRef prev_sample = nullptr;
-		uint64_t prev_sample_time = 0;
-
-		//? GPU frequency table from DVFS
-		vector<uint32_t> gpu_freqs;
-
-		static string cfstring_to_string(CFStringRef cfstr) {
-			if (not cfstr) return "";
-			char buf[256];
-			if (CFStringGetCString(cfstr, buf, sizeof(buf), kCFStringEncodingUTF8))
-				return string(buf);
-			return "";
-		}
+		//? sitop: i dati arrivano da AppleSoc (una sola sottoscrizione IOReport condivisa con la CPU)
 
 		static string get_chip_name() {
 			char buf[256];
@@ -241,80 +187,10 @@ namespace Gpu {
 			return "Apple Silicon GPU";
 		}
 
-		static uint64_t get_mach_time_ms() {
-			static mach_timebase_info_data_t timebase = {0, 0};
-			if (timebase.denom == 0) mach_timebase_info(&timebase);
-			return (mach_absolute_time() * timebase.numer / timebase.denom) / 1000000;
-		}
-
-		//? Read GPU DVFS frequency table from IORegistry pmgr node
-		static void get_gpu_freqs_from_pmgr() {
-			io_iterator_t iter_raw;
-			//? matchDict ownership is consumed by IOServiceGetMatchingServices
-			CFMutableDictionaryRef matchDict = IOServiceMatching("AppleARMIODevice");
-			if (IOServiceGetMatchingServices(kIOMainPortDefault, matchDict, &iter_raw) != kIOReturnSuccess)
-				return;
-			IORef iter(iter_raw);
-
-			io_object_t entry_raw;
-			while ((entry_raw = IOIteratorNext(iter)) != 0) {
-				IORef entry(entry_raw);
-				char name[128];
-				if (IORegistryEntryGetName(entry, name) == kIOReturnSuccess and string(name) == "pmgr") {
-					CFMutableDictionaryRef props_raw = nullptr;
-					if (IORegistryEntryCreateCFProperties(entry, &props_raw, kCFAllocatorDefault, 0) == kIOReturnSuccess and props_raw) {
-						CFRef<CFMutableDictionaryRef> props(props_raw);
-						CFDataRef dvfs_data = (CFDataRef)CFDictionaryGetValue(props, CFSTR("voltage-states9"));
-						if (dvfs_data) {
-							auto len = CFDataGetLength(dvfs_data);
-							auto ptr = CFDataGetBytePtr(dvfs_data);
-							//? Pairs of (freq, voltage), 4 bytes each
-							for (CFIndex i = 0; i + 7 < len; i += 8) {
-								uint32_t freq = 0;
-								memcpy(&freq, ptr + i, 4);
-								if (freq > 0) gpu_freqs.push_back(freq / (1000 * 1000)); // Hz -> MHz
-							}
-						}
-					}
-				}
-			}
-		}
-
 		bool init() {
 			if (initialized) return false;
-
-			//? Get GPU frequency table
-			get_gpu_freqs_from_pmgr();
-
-			//? Set up IOReport channels for GPU Stats and Energy Model
-			CFRef<CFStringRef> gpu_stats_group(CFStringCreateWithCString(kCFAllocatorDefault, "GPU Stats", kCFStringEncodingUTF8));
-			CFRef<CFStringRef> gpu_perf_subgroup(CFStringCreateWithCString(kCFAllocatorDefault, "GPU Performance States", kCFStringEncodingUTF8));
-			CFRef<CFStringRef> energy_group(CFStringCreateWithCString(kCFAllocatorDefault, "Energy Model", kCFStringEncodingUTF8));
-
-			CFRef<CFDictionaryRef> gpu_chan(IOReportCopyChannelsInGroup(gpu_stats_group, gpu_perf_subgroup, 0, 0, 0));
-			CFRef<CFDictionaryRef> energy_chan(IOReportCopyChannelsInGroup(energy_group, nullptr, 0, 0, 0));
-
-			if (not gpu_chan.get() and not energy_chan.get()) {
-				Logger::info("Apple Silicon GPU: No IOReport channels found, GPU monitoring unavailable");
-				return false;
-			}
-
-			//? Merge channels into a single subscription
-			if (gpu_chan.get() and energy_chan.get()) {
-				IOReportMergeChannels(gpu_chan, energy_chan, nullptr);
-			}
-			CFDictionaryRef base_chan = gpu_chan.get() ? gpu_chan.get() : energy_chan.get();
-
-			auto size = CFDictionaryGetCount(base_chan);
-			ior_chan = CFDictionaryCreateMutableCopy(kCFAllocatorDefault, size, base_chan);
-
-			//? Create IOReport subscription
-			CFMutableDictionaryRef sub_dict = nullptr;
-			ior_sub = IOReportCreateSubscription(nullptr, ior_chan, &sub_dict, 0, nullptr);
-			if (not ior_sub) {
-				Logger::warning("Apple Silicon GPU: Failed to create IOReport subscription");
-				CFRelease(ior_chan);
-				ior_chan = nullptr;
+			if (not AppleSoc::init()) {
+				Logger::info("Apple Silicon GPU: AppleSoc non disponibile, monitoraggio GPU assente");
 				return false;
 			}
 
@@ -324,10 +200,6 @@ namespace Gpu {
 
 			initialized = true;
 
-			//? Take initial sample for delta computation
-			prev_sample = IOReportCreateSamples(ior_sub, ior_chan, nullptr);
-			prev_sample_time = get_mach_time_ms();
-
 			//? Run init collect to populate names and supported functions
 			collect<1>(gpus.data());
 
@@ -336,74 +208,17 @@ namespace Gpu {
 
 		bool shutdown() {
 			if (not initialized) return false;
-			if (prev_sample) { CFRelease(prev_sample); prev_sample = nullptr; }
-			if (ior_chan) { CFRelease(ior_chan); ior_chan = nullptr; }
-			if (ior_sub) { CFRelease((CFTypeRef)ior_sub); ior_sub = nullptr; }
+			AppleSoc::shutdown();
 			initialized = false;
 			return true;
-		}
-
-		//? Read GPU temperature via IOHIDEventSystem thermal sensors
-		static long long get_gpu_temp_iohid() {
-			#if __MAC_OS_X_VERSION_MIN_REQUIRED > 101504
-			constexpr int kHIDPage_AppleVendor = 0xff00;
-			constexpr int kHIDUsage_TemperatureSensor = 5;
-			constexpr int64_t kIOHIDEventTypeTemperature = 15;
-
-			CFStringRef keys[2] = { CFSTR("PrimaryUsagePage"), CFSTR("PrimaryUsage") };
-			int page = kHIDPage_AppleVendor, usage = kHIDUsage_TemperatureSensor;
-			CFRef<CFNumberRef> num0(CFNumberCreate(nullptr, kCFNumberSInt32Type, &page));
-			CFRef<CFNumberRef> num1(CFNumberCreate(nullptr, kCFNumberSInt32Type, &usage));
-			const void* values[] = { num0.get(), num1.get() };
-			CFRef<CFDictionaryRef> match(CFDictionaryCreate(nullptr,
-				(const void**)keys, values, 2,
-				&kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks));
-
-			CFRef<IOHIDEventSystemClientRef> system(IOHIDEventSystemClientCreate(kCFAllocatorDefault));
-			if (not system.get()) return -1;
-			IOHIDEventSystemClientSetMatching(system, match);
-			CFRef<CFArrayRef> services(IOHIDEventSystemClientCopyServices(system));
-
-			if (not services.get()) return -1;
-
-			double gpu_temp_sum = 0;
-			int gpu_temp_count = 0;
-			long count = CFArrayGetCount(services);
-			for (long i = 0; i < count; i++) {
-				auto sc = (IOHIDServiceClientRef)CFArrayGetValueAtIndex(services, i);
-				if (not sc) continue;
-				CFRef<CFStringRef> name(IOHIDServiceClientCopyProperty(sc, CFSTR("Product")));
-				if (not name.get()) continue;
-				char buf[200];
-				CFStringGetCString(name, buf, 200, kCFStringEncodingASCII);
-				string n(buf);
-				//? Legacy Apple Silicon uses "GPU MTR Temp Sensor*" names.
-				//? On newer Apple Silicon we can see PMU TP*g sensors for GPU temperatures.
-				bool is_gpu_sensor = n.find("GPU") != string::npos;
-				if (not is_gpu_sensor and n.rfind("PMU TP", 0) == 0 and not n.empty() and n.back() == 'g') {
-					is_gpu_sensor = true;
-				}
-				if (is_gpu_sensor) {
-					CFRef<IOHIDEventRef> event(IOHIDServiceClientCopyEvent(sc, kIOHIDEventTypeTemperature, 0, 0));
-					if (event.get()) {
-						double temp = IOHIDEventGetFloatValue(event, kIOHIDEventTypeTemperature << 16);
-						if (temp > 0 and temp < 150) {
-							gpu_temp_sum += temp;
-							gpu_temp_count++;
-						}
-					}
-				}
-			}
-
-			if (gpu_temp_count > 0)
-				return static_cast<long long>(round(gpu_temp_sum / gpu_temp_count));
-			#endif
-			return -1;
 		}
 
 		template <bool is_init>
 		bool collect(gpu_info* gpus_slice) {
 			if (not initialized) return false;
+
+			//? all'avvio serve un delta vero (il campione di base non ne ha)
+			const auto& soc = AppleSoc::collect(is_init ? 0 : 50);
 
 			if constexpr (is_init) {
 				//? Device name
@@ -424,10 +239,11 @@ namespace Gpu {
 					gpus_slice[0].mem_total = memsize;
 
 				//? Supported functions
+				//? sitop: su Apple "mem utilization" era la stessa residenza della GPU: tolta (niente doppioni)
 				gpus_slice[0].supported_functions = {
 					.gpu_utilization = true,
-					.mem_utilization = true,
-					.gpu_clock = not gpu_freqs.empty(),
+					.mem_utilization = false,
+					.gpu_clock = soc.gpu_freq_max_mhz.has_value(),
 					.mem_clock = false,
 					.pwr_usage = true,
 					.pwr_state = false,
@@ -438,124 +254,52 @@ namespace Gpu {
 					.encoder_utilization = false,
 					.decoder_utilization = false
 				};
+				gpus_slice[0].unified_memory = true;
+				gpus_slice[0].show_ane = true;
+				gpus_slice[0].gpu_clock_max = soc.gpu_freq_max_mhz ? static_cast<unsigned int>(*soc.gpu_freq_max_mhz) : 0;
+				gpus_slice[0].gpu_clock_speed = 0;
+				gpus_slice[0].pwr_usage = 0;
+				gpus_slice[0].pwr_state = 32;
+				gpus_slice[0].temp.clear();
+				//? il disegno legge back(): un primo punto serve anche se il dato manca (poi resta "—")
+				if (not soc.gpu_usage_pct) gpus_slice[0].gpu_percent.at("gpu-totals").push_back(0);
+				if (not soc.gpu_power_w) gpus_slice[0].gpu_percent.at("gpu-pwr-totals").push_back(0);
+				if (not soc.gpu_temp_c) gpus_slice[0].temp.push_back(0);
 			}
 
-			//? Take new IOReport sample and compute delta
-			CFDictionaryRef cur_sample = IOReportCreateSamples(ior_sub, ior_chan, nullptr);
-			if (not cur_sample) return false;
-
-			uint64_t cur_time = get_mach_time_ms();
-			uint64_t dt = cur_time - prev_sample_time;
-			if (dt == 0) dt = 1;
-
-			CFRef<CFDictionaryRef> delta;
-			if (prev_sample) {
-				delta.reset(IOReportCreateSamplesDelta(prev_sample, cur_sample, nullptr));
-				CFRelease(prev_sample);
-			}
-			prev_sample = cur_sample;
-			prev_sample_time = cur_time;
-
-			if (not delta.get()) return false;
-
-			//? Parse delta samples
-			CFArrayRef channels = (CFArrayRef)CFDictionaryGetValue(delta, CFSTR("IOReportChannels"));
-			if (not channels) return false;
-
-			long long gpu_utilization = 0;
-			bool got_gpu_util = false;
-			double gpu_power_watts = 0;
-			bool got_gpu_power = false;
-
-			long chan_count = CFArrayGetCount(channels);
-			for (long i = 0; i < chan_count; i++) {
-				CFDictionaryRef item = (CFDictionaryRef)CFArrayGetValueAtIndex(channels, i);
-				if (not item) continue;
-
-				string group = cfstring_to_string(IOReportChannelGetGroup(item));
-				string subgroup = cfstring_to_string(IOReportChannelGetSubGroup(item));
-				string channel = cfstring_to_string(IOReportChannelGetChannelName(item));
-
-				//? GPU utilization from residency states
-				if (group == "GPU Stats" and subgroup == "GPU Performance States" and channel == "GPUPH") {
-					int32_t state_count = IOReportStateGetCount(item);
-					if (state_count <= 0) continue;
-
-					int64_t total_residency = 0;
-					int64_t active_residency = 0;
-					double weighted_freq = 0;
-
-					//? Find offset past IDLE/OFF/DOWN states
-					int offset = 0;
-					for (int32_t s = 0; s < state_count; s++) {
-						string name = cfstring_to_string(IOReportStateGetNameForIndex(item, s));
-						if (name == "IDLE" or name == "OFF" or name == "DOWN")
-							offset = s + 1;
-						total_residency += IOReportStateGetResidency(item, s);
-					}
-
-					int freq_count = static_cast<int>(gpu_freqs.size());
-					for (int32_t s = offset; s < state_count; s++) {
-						int64_t res = IOReportStateGetResidency(item, s);
-						active_residency += res;
-						int freq_idx = s - offset;
-						if (freq_idx < freq_count and active_residency > 0)
-							weighted_freq += static_cast<double>(res) * gpu_freqs[freq_idx];
-					}
-
-					if (total_residency > 0) {
-						double usage_ratio = static_cast<double>(active_residency) / static_cast<double>(total_residency);
-						gpu_utilization = clamp(static_cast<long long>(round(usage_ratio * 100.0)), 0ll, 100ll);
-						got_gpu_util = true;
-
-						//? Calculate average frequency
-						if (active_residency > 0 and not gpu_freqs.empty()) {
-							double avg_freq = weighted_freq / static_cast<double>(active_residency);
-							gpus_slice[0].gpu_clock_speed = static_cast<unsigned int>(round(avg_freq));
-						}
-					}
-				}
-
-				//? GPU power from Energy Model
-				if (group == "Energy Model" and channel == "GPU Energy") {
-					string unit = cfstring_to_string(IOReportChannelGetUnitLabel(item));
-					int64_t val = IOReportSimpleGetIntegerValue(item, 0);
-					double energy = static_cast<double>(val);
-					double divisor = static_cast<double>(dt) / 1000.0; // dt is in ms
-
-					if (unit.find("nJ") != string::npos) energy /= 1e9;
-					else if (unit.find("uJ") != string::npos or unit.find("\xc2\xb5J") != string::npos) energy /= 1e6;
-					else if (unit.find("mJ") != string::npos) energy /= 1e3;
-					//? energy is now in Joules
-
-					if (divisor > 0) {
-						gpu_power_watts = energy / divisor;
-						got_gpu_power = true;
-					}
-				}
-			}
-
-			//? Store GPU utilization
-			if (got_gpu_util) {
+			//? Store GPU utilization (residenza attiva di GPUPH)
+			if (soc.gpu_usage_pct) {
+				const auto gpu_utilization = clamp(static_cast<long long>(round(*soc.gpu_usage_pct)), 0ll, 100ll);
 				gpus_slice[0].gpu_percent.at("gpu-totals").push_back(gpu_utilization);
 				gpus_slice[0].mem_utilization_percent.push_back(gpu_utilization);
 			}
 
+			//? Average frequency while active
+			if (soc.gpu_freq_mhz)
+				gpus_slice[0].gpu_clock_speed = static_cast<unsigned int>(round(*soc.gpu_freq_mhz));
+
 			//? Store power usage (convert W to mW)
-			if (got_gpu_power) {
-				gpus_slice[0].pwr_usage = static_cast<long long>(round(gpu_power_watts * 1000.0));
+			if (soc.gpu_power_w) {
+				gpus_slice[0].pwr_usage = static_cast<long long>(round(*soc.gpu_power_w * 1000.0));
 				if (gpus_slice[0].pwr_usage > gpus_slice[0].pwr_max_usage)
 					gpus_slice[0].pwr_max_usage = gpus_slice[0].pwr_usage;
 				gpus_slice[0].gpu_percent.at("gpu-pwr-totals").push_back(
 					clamp(static_cast<long long>(round(static_cast<double>(gpus_slice[0].pwr_usage) * 100.0 / static_cast<double>(gpus_slice[0].pwr_max_usage))), 0ll, 100ll));
 			}
 
-			//? GPU temperature
-			if (gpus_slice[0].supported_functions.temp_info and Config::getB("check_temp")) {
-				long long temp = get_gpu_temp_iohid();
-				if (temp > 0)
-					gpus_slice[0].temp.push_back(temp);
-			}
+			//? GPU temperature: HID, ripiego SMC Tg*; assente -> nessun valore (mai 0), il disegno mostra "—"
+			gpus_slice[0].temp_available = soc.gpu_temp_c.has_value();
+			if (gpus_slice[0].supported_functions.temp_info and Config::getB("check_temp") and soc.gpu_temp_c)
+				gpus_slice[0].temp.push_back(static_cast<long long>(round(*soc.gpu_temp_c)));
+
+			//? ANE: potenza CLPC; uso solo come stima (floor PMP)
+			gpus_slice[0].ane_power_w = soc.ane_power_w;
+			gpus_slice[0].ane_usage_estimate_pct = soc.ane_usage_estimate_pct;
+			//? storico ANE: potenza in % del massimo di sessione (minimo 1 W); dato assente = 0 solo nel grafico
+			if (soc.ane_power_w)
+				gpus_slice[0].ane_power_scale_w = max({gpus_slice[0].ane_power_scale_w, 1.0, *soc.ane_power_w});
+			gpus_slice[0].ane_percent.push_back(soc.ane_power_w
+				? clamp(static_cast<long long>(round(*soc.ane_power_w * 100.0 / gpus_slice[0].ane_power_scale_w)), 0ll, 100ll) : 0);
 
 			//? Memory usage (unified memory — report system memory usage)
 			if (gpus_slice[0].supported_functions.mem_total) {
@@ -614,6 +358,7 @@ namespace Gpu {
 			//* Trim vectors if there are more values than needed for graphs
 			if (width != 0) {
 				while (cmp_greater(gpu.gpu_percent.at("gpu-totals").size(), width * 2)) gpu.gpu_percent.at("gpu-totals").pop_front();
+				while (cmp_greater(gpu.ane_percent.size(), width * 2)) gpu.ane_percent.pop_front();
 				while (cmp_greater(gpu.mem_utilization_percent.size(), width)) gpu.mem_utilization_percent.pop_front();
 				while (cmp_greater(gpu.gpu_percent.at("gpu-pwr-totals").size(), width)) gpu.gpu_percent.at("gpu-pwr-totals").pop_front();
 				while (cmp_greater(gpu.temp.size(), 18)) gpu.temp.pop_front();
@@ -700,6 +445,12 @@ namespace Shared {
 		//* Get maximum length of process arguments
 		arg_max = sysconf(_SC_ARG_MAX);
 
+		//? sitop: raccolta SoC Apple Silicon (topologia, frequenze, potenze, temperature)
+		if (AppleSoc::init()) {
+			Cpu::supports_watts = AppleSoc::has_cpu_power();
+			Cpu::apple_cluster_count = static_cast<int>(AppleSoc::last().clusters.size());
+		}
+
 		//? Init for namespace Cpu
 		Cpu::current_cpu.core_percent.insert(Cpu::current_cpu.core_percent.begin(), Shared::coreCount, {});
 		Cpu::current_cpu.temp.insert(Cpu::current_cpu.temp.begin(), Shared::coreCount + 1, {});
@@ -730,7 +481,8 @@ namespace Shared {
 			count = gpus.size();
 			gpu_b_height_offsets.resize(gpus.size());
 			for (size_t i = 0; i < gpu_b_height_offsets.size(); ++i)
-				gpu_b_height_offsets[i] = gpus[i].supported_functions.gpu_utilization
+				gpu_b_height_offsets[i] = gpus[i].show_ane //? sitop: riga ANE
+					+ gpus[i].supported_functions.gpu_utilization
 					+ gpus[i].supported_functions.pwr_usage
 					+ (gpus[i].supported_functions.encoder_utilization or gpus[i].supported_functions.decoder_utilization)
 					+ (gpus[i].supported_functions.mem_total or gpus[i].supported_functions.mem_used)
@@ -865,10 +617,15 @@ namespace Cpu {
 			}
 		}
 
+		//? sitop: una lettura non plausibile (0 °C, oltre 150 °C) non entra nel grafico, se c'e' gia' un valore da mostrare
+		auto keep = [](const deque<long long>& d, long long t) { return (t > 0 and t <= 150) or d.empty(); };
+
 		if (last_result.valid) {
-			current_cpu.temp.at(0).push_back(last_result.package_temp);
-			if (current_cpu.temp.at(0).size() > 20)
-				current_cpu.temp.at(0).pop_front();
+			if (keep(current_cpu.temp.at(0), last_result.package_temp)) {
+				current_cpu.temp.at(0).push_back(last_result.package_temp);
+				if (current_cpu.temp.at(0).size() > 20)
+					current_cpu.temp.at(0).pop_front();
+			}
 
 			if (macM1) {
 				cpu_temp_only = last_result.core_temps.empty();
@@ -879,7 +636,7 @@ namespace Cpu {
 				for (int core = 0; core < Shared::coreCount; core++) {
 					size_t sensor_index = static_cast<size_t>(core) * last_result.core_temps.size() / Shared::coreCount;
 					long long temp = last_result.core_temps.at(sensor_index);
-					if (cmp_less(core + 1, current_cpu.temp.size())) {
+					if (cmp_less(core + 1, current_cpu.temp.size()) and keep(current_cpu.temp.at(core + 1), temp)) {
 						current_cpu.temp.at(core + 1).push_back(temp);
 						if (current_cpu.temp.at(core + 1).size() > 20)
 							current_cpu.temp.at(core + 1).pop_front();
@@ -891,7 +648,18 @@ namespace Cpu {
 		sensor_future = std::async(std::launch::async, collect_sensors);
 	}
 
+	//? sitop: su Apple Silicon il sysctl non c'e'; la frequenza arriva da AppleSoc (vedi collect).
+	//? Qui serve solo a dire se il campo esiste: valore corrente o, prima del primo campione, il massimo DVFS.
+	static string apple_cpuHz() {
+		if (not cpuHz.empty()) return cpuHz;
+		std::optional<double> max_mhz;
+		for (const auto& c : AppleSoc::last().clusters)
+			if (c.freq_max_mhz) max_mhz = std::max(max_mhz.value_or(0), *c.freq_max_mhz);
+		return max_mhz ? AppleSoc::Pure::format_freq(*max_mhz) : "";
+	}
+
 	string get_cpuHz() {
+		if (AppleSoc::available()) return apple_cpuHz();
 		unsigned int freq = 1;
 		size_t size = sizeof(freq);
 
@@ -1099,7 +867,26 @@ namespace Cpu {
 		//? Reduce size if there are more values than needed for graph
 		while (cmp_greater(cpu.cpu_percent.at("total").size(), width * 2)) cpu.cpu_percent.at("total").pop_front();
 
-		if (Config::getB("show_cpu_freq")) {
+		if (AppleSoc::available()) {
+			//? sitop: livelli, frequenze e potenza CPU dalla raccolta SoC condivisa con la GPU
+			const auto& soc = AppleSoc::collect();
+			cpu.clusters.clear();
+			std::optional<double> top_freq;
+			for (const auto& c : soc.clusters) {
+				cpu.clusters.push_back(cluster_info{
+					.name = c.name, .label = c.label, .cores = c.cores,
+					.freq_mhz = c.freq_mhz, .freq_max_mhz = c.freq_max_mhz, .active_pct = c.active_pct, .temp_c = c.temp_c,
+				});
+				if (c.freq_mhz) top_freq = std::max(top_freq.value_or(0), *c.freq_mhz);
+			}
+			if (soc.cpu_power_w) {
+				cpu.usage_watts = static_cast<float>(*soc.cpu_power_w);
+				supports_watts = true;
+			}
+			//? frequenza del livello piu' veloce in questo intervallo; senza dato resta l'ultima
+			if (Config::getB("show_cpu_freq") and top_freq)
+				cpuHz = AppleSoc::Pure::format_freq(*top_freq);
+		} else if (Config::getB("show_cpu_freq")) {
 			auto hz = get_cpuHz();
 			if (hz != "") {
 				cpuHz = hz;
@@ -1245,6 +1032,13 @@ namespace Mem {
 		auto swap_disk = Config::getB("swap_disk");
 		auto &mem = current_mem;
 		static bool snapped = (getenv("BTOP_SNAPPED") != nullptr);
+
+		//? sitop: banda DRAM dalla raccolta SoC (stesso campione di cpu/gpu/pwr del ciclo)
+		if (AppleSoc::available()) {
+			const auto& soc = AppleSoc::collect();
+			mem.dram_bw_gbs = soc.dram_bw_gbs;
+			mem.dram_bw_estimate_gbs = soc.dram_bw_estimate_gbs;
+		}
 
 		vm_statistics64 p;
 		mach_msg_type_number_t info_size = HOST_VM_INFO64_COUNT;
@@ -2065,3 +1859,38 @@ namespace Tools {
 		return 0.0;
 	}
 }  // namespace Tools
+
+#ifdef SITOP_PWR_BOX
+//? sitop: potenze del SoC per il box pwr, dallo stesso campione AppleSoc del ciclo
+namespace Pwr {
+	pwr_info current_pwr;
+
+	auto collect(bool no_update) -> pwr_info& {
+		auto& pwr = current_pwr;
+		if (Runner::stopping or (no_update and not pwr.history[0].empty())) return pwr;
+		if (not AppleSoc::available()) return pwr;
+		const auto& soc = AppleSoc::collect();
+
+		std::optional<double> total;
+		for (auto v : {soc.cpu_power_w, soc.gpu_power_w, soc.ane_power_w, soc.dram_power_w})
+			if (v) total = total.value_or(0) + *v;
+		const array<std::optional<double>, series_count> values {
+			soc.cpu_power_w, soc.gpu_power_w, soc.ane_power_w, soc.dram_power_w, soc.system_power_w, total
+		};
+		//? il primo campione (senza delta) non entra nello storico
+		if (not soc.valid and pwr.history[0].empty()) return pwr;
+		for (size_t i = 0; i < series_count; i++) {
+			pwr.current[i] = values[i];
+			if (values[i]) {
+				pwr.available[i] = true;
+				pwr.session_max[i] = max(pwr.session_max[i], *values[i]);
+			}
+			//? lo storico ha bisogno di un punto per ciclo; un dato assente vale 0 solo nel grafico
+			pwr.history[i].push_back(values[i] ? static_cast<long long>(round(*values[i] * 1000.0)) : 0);
+			while (cmp_greater(pwr.history[i].size(), max(Term::width.load(), 40) * 2)) pwr.history[i].pop_front();
+		}
+		pwr.thermal_state = soc.thermal_state;
+		return pwr;
+	}
+}
+#endif

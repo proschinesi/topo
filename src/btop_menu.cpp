@@ -184,6 +184,10 @@ namespace Menu {
 		{"3", "Toggle NET box."},
 		{"4", "Toggle PROC box."},
 		{"5", "Toggle GPU box."},
+	#ifdef SITOP_PWR_BOX
+		{"6", "Toggle PWR box (Apple Silicon power, SoC = CPU+GPU+ANE+DRAM)."},
+		{"ANE ~x%", "Estimated ANE use (PMP floor requests), not measured."},
+	#endif
 		{"d", "Toggle disks view in MEM box."},
 		{"F2, o", "Shows options."},
 		{"F1, ?, h", "Shows this window."},

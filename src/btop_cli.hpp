@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Modified for sitop (fork of btop for Apple Silicon), 2026: see NOTICE.
 
 #pragma once
 
@@ -32,6 +33,10 @@ namespace Cli {
 		std::optional<stdfs::path> themes_dir;
 		// The initial refresh rate
 		std::optional<std::uint32_t> updates;
+		// sitop: print SoC samples as JSON lines and exit (no TUI)
+		bool dump_soc {};
+		std::uint32_t dump_count { 1 };
+		std::uint32_t dump_interval_ms { 1000 };
 	};
 
 	using Result = std::expected<Cli, std::int32_t>;

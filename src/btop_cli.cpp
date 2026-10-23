@@ -193,6 +193,36 @@ namespace Cli {
 				continue;
 			}
 
+			if (arg == "--dump-soc") {
+				cli.dump_soc = true;
+				continue;
+			}
+			if (arg == "--count" || arg == "--interval") {
+				// sitop: options of --dump-soc, both require a positive number
+				const bool is_count = arg == "--count";
+				if (++it == args.end()) {
+					error(fmt::format("{} requires an argument", arg));
+					return std::unexpected { 1 };
+				}
+				auto value = *it;
+				try {
+					auto number = std::stoi(std::string { value });
+					if (number < 1) throw std::invalid_argument("not positive");
+					if (is_count) {
+						cli.dump_count = static_cast<std::uint32_t>(number);
+					} else {
+						cli.dump_interval_ms = static_cast<std::uint32_t>(std::max(number, 10));
+					}
+				} catch (std::invalid_argument& e) {
+					error(fmt::format("{} must be a positive number", arg));
+					return std::unexpected { 1 };
+				} catch (std::out_of_range& e) {
+					error(fmt::format("{} argument is out of range: {}", arg, value));
+					return std::unexpected { 1 };
+				}
+				continue;
+			}
+
 			error(fmt::format("Unknown argument '{}{}{}'", YELLOW, arg, RESET));
 			return std::unexpected { 1 };
 		}
@@ -261,6 +291,9 @@ namespace Cli {
 			"  {2}    --no-tty{1}            Force disable tty mode\n"
 			"  {2}-u, --update{1} <ms>       Set an initial update rate in milliseconds\n"
 			"  {2}    --default-config{1}    Print default config to standard output\n"
+			"  {2}    --dump-soc{1}          Print Apple SoC samples as JSON lines and exit\n"
+			"  {2}    --count{1} <n>         Number of samples for --dump-soc (default 1)\n"
+			"  {2}    --interval{1} <ms>     Interval between --dump-soc samples (default 1000)\n"
 			"  {2}-h, --help{1}              Show this help message and exit\n"
 			"  {2}-V, --version{1}           Show a version message and exit (more with --version)\n",
 			BOLD_UNDERLINE, RESET, BOLD

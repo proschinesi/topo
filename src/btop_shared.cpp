@@ -12,6 +12,8 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 
+   Modified for sitop (fork of btop for Apple Silicon), 2026: see NOTICE.
+
 indent = tab
 tab-size = 4
 */
@@ -34,6 +36,7 @@ using namespace Tools;
 
 namespace Cpu {
     std::optional<std::string> container_engine;
+	int apple_cluster_count = 0; //? sitop: impostato dalla raccolta macOS
 
 	string trim_name(string name) {
 		auto name_vec = ssplit(name);

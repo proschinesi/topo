@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# Modified for sitop (fork of btop for Apple Silicon), 2026: see NOTICE.
 
 include(FetchContent)
 FetchContent_Declare(
@@ -14,6 +15,10 @@ target_include_directories(libbtop_test PUBLIC ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(libbtop_test libbtop GTest::gtest_main)
 
 add_executable(btop_test cpu_names.cpp tools.cpp)
+if(APPLE)
+  # sitop: parti pure di src/osx/apple_soc
+  target_sources(btop_test PRIVATE apple_soc.cpp)
+endif()
 target_link_libraries(btop_test libbtop_test)
 
 include(GoogleTest)
