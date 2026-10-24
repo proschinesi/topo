@@ -612,6 +612,12 @@ namespace Runner {
 					try {
 						if (Global::debug) debug_timer("pwr", collect_begin);
 						auto pwr = Pwr::collect(conf.no_update);
+						//? topo: arrivata la potenza GPU/ANE, il box gpu toglie la riga PWR: ricalcolo dimensioni
+						if (Pwr::gpu_data_reset.exchange(false)) {
+							Global::resized = true;
+							Input::interrupt();
+							continue;
+						}
 						if (Global::debug) debug_timer("pwr", draw_begin);
 						if (not pause_output) output += Pwr::draw(pwr, conf.force_redraw, conf.no_update);
 						if (Global::debug) debug_timer("pwr", draw_done);

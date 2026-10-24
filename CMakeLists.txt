@@ -21,7 +21,7 @@ set(APP_VERSION "0.1.0")
 project("${APP_NAME}"
   VERSION ${APP_VERSION}
   DESCRIPTION "A monitor of resources for Apple Silicon (fork of btop)"
-  HOMEPAGE_URL "https://github.com/aristocratos/btop"
+  HOMEPAGE_URL "https://github.com/proschinesi/topo"
   LANGUAGES CXX
 )
 
@@ -272,16 +272,16 @@ find_program(LOWDOWN_EXECUTABLE lowdown)
 if(LOWDOWN_EXECUTABLE)
   # Custom target to compile Markdown to man page using lowdown
   add_custom_command(
-    OUTPUT btop.1
-    COMMAND lowdown -s -T man -o btop.1 ${CMAKE_CURRENT_SOURCE_DIR}/manpage.md
+    OUTPUT ${APP_NAME}.1
+    COMMAND lowdown -s -T man -o ${APP_NAME}.1 ${CMAKE_CURRENT_SOURCE_DIR}/manpage.md
     DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/manpage.md
     VERBATIM
   )
-  add_custom_target(generate_manpage ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/btop.1)
+  add_custom_target(generate_manpage ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/${APP_NAME}.1)
   # Install the man page
-  install(FILES "${CMAKE_CURRENT_BINARY_DIR}/btop.1" DESTINATION "share/man/man1" RENAME "${APP_NAME}.1")
+  install(FILES "${CMAKE_CURRENT_BINARY_DIR}/${APP_NAME}.1" DESTINATION "share/man/man1")
 else()
-  message(STATUS "Command 'lowdown' not found: skipping generating man page btop.1")
+  message(STATUS "Command 'lowdown' not found: skipping generating man page ${APP_NAME}.1")
 endif()
 
 install(TARGETS ${APP_NAME} RUNTIME)

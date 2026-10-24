@@ -134,6 +134,7 @@ namespace Gpu {
 	extern vector<int> shown_panels;
 	extern vector<string> gpu_names;
 	extern vector<int> gpu_b_height_offsets;
+	extern vector<bool> gpu_pwr_row_hideable; //? topo: riga PWR del box gpu da nascondere quando c'e' il box pwr
 	extern long long gpu_pwr_total_max;
 
 	extern std::unordered_map<string, deque<long long>> shared_gpu_percent; // averages, power/vram total
@@ -372,6 +373,10 @@ namespace Pwr {
 		array<bool, series_count> unverified {};         //? valore CLPC non ancora verificato ("~")
 		std::optional<string> thermal_state;
 	};
+
+	//? potenza GPU o ANE mai arrivata nel box pwr: solo allora il box gpu toglie la sua riga PWR e i watt ANE.
+	//? gpu_data_reset chiede al runner il ricalcolo delle dimensioni quando il dato cambia (come coreNum_reset).
+	extern atomic<bool> has_gpu_data, gpu_data_reset;
 
 	auto collect(bool no_update = false) -> pwr_info&;
 	string draw(const pwr_info& pwr, bool force_redraw = false, bool data_same = false);

@@ -668,7 +668,7 @@ namespace Menu {
 				"When the direct DRAM counters (AMC) are",
 				"not readable, show the estimate from",
 				"the PMP bandwidth histograms as",
-				"\"DRAM BW ~x GB/s (stima)\".",
+				"\"DRAM BW ~x GB/s (est.)\".",
 				"",
 				"False: show nothing in that case."},
 		#endif

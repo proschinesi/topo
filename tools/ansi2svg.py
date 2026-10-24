@@ -7,6 +7,12 @@ Solo libreria standard: si esegue con `python3 -I tools/ansi2svg.py`.
 
 Uso:
     python3 -I tools/ansi2svg.py CATTURA.raw COLONNE RIGHE OUT.svg [--title TITOLO] [--font-size 14]
+    python3 -I tools/ansi2svg.py animate CATT1.raw CATT2.raw ... --size 120x40 -o OUT.svg [--frame-ms 1000]
+    python3 -I tools/ansi2svg.py record --size 120x40 --frames 20 --warmup 40 -o OUT.svg [--still S.svg] -- CMD ...
+
+`animate` monta piu' catture in un SVG animato; `record` esegue CMD in un pty, ne prende un aggiornamento ogni
+--frame-ms dopo --warmup secondi e scrive l'SVG animato (e con --still l'ultimo fotogramma come SVG statico).
+L'animazione e' solo CSS (@keyframes a gradini, in loop), senza script: si vede anche dentro <img>.
 
 La cattura e' il flusso di byte scritto dal programma (sequenze CSI di posizionamento, cancellazione e
 colore SGR, compresi i colori a 24 bit). Il terminale emulato e' minimale ma basta per btop/topo:
@@ -16,6 +22,7 @@ un <text> con textLength fisso, cosi' riquadri e grafici braille restano allinea
 """
 
 import argparse
+import codecs
 import html
 import re
 import sys
@@ -121,8 +128,13 @@ def char_width(c):
     return 2 if unicodedata.east_asian_width(c) in ("W", "F") else 1
 
 
-def emulate(data, cols, rows):
+def emulate(data, cols, rows, marks=None):
+    """Emula il flusso e restituisce lo schermo finale; con `marks` (lista di offset nella stringa, anche vuota)
+    restituisce invece una lista con una copia dello schermo per ogni offset."""
     blank = lambda a: (" ", a.key())
+    pending = sorted(marks) if marks is not None else []
+    mi = 0
+    shots = []
     attr = Attr()
     screen = [[blank(attr) for _ in range(cols)] for _ in range(rows)]
     y = x = 0
@@ -136,6 +148,9 @@ def emulate(data, cols, rows):
         x = max(0, min(cols - 1, x))
 
     while i < n:
+        while mi < len(pending) and i >= pending[mi]:
+            shots.append([row[:] for row in screen])
+            mi += 1
         c = data[i]
         if c == "\x1b":
             m = csi.match(data, i)
@@ -224,64 +239,317 @@ def emulate(data, cols, rows):
                 if w == 2 and x + 1 < cols:
                     screen[y][x + 1] = ("", attr.key())
             x = min(cols - 1, x + w) if x + w < cols else cols - 1
-    return screen
+    if marks is None:
+        return screen
+    shots.extend([row[:] for row in screen] for _ in pending[mi:])
+    return shots
 
 
 def hexcolor(rgb):
     return "#{:02x}{:02x}{:02x}".format(*rgb)
 
 
+def num(v):
+    return ("%.1f" % v).rstrip("0").rstrip(".")
+
+
+class Canvas:
+    """Geometria della griglia e tabella dei colori (una classe CSS per colore)."""
+
+    def __init__(self, cols, rows, font_size, title):
+        self.cols, self.rows, self.font_size, self.title = cols, rows, font_size, title
+        self.cw = font_size * 0.6
+        self.ch = font_size * 1.25
+        self.pad = 8
+        self.top = self.pad + (self.ch + 6 if title else 0)
+        self.width = cols * self.cw + 2 * self.pad
+        self.height = rows * self.ch + self.top + self.pad
+        self.colors = {}
+
+    def cls(self, rgb):
+        c = hexcolor(rgb)
+        if c not in self.colors:
+            self.colors[c] = "c%d" % len(self.colors)
+        return self.colors[c]
+
+    def elements(self, screen, page_bg):
+        """Elementi SVG di uno schermo: (rect di sfondo, testi). Ogni elemento e' una stringa completa."""
+        cw, ch, pad = self.cw, self.ch, self.pad
+        rects, texts = [], []
+        for yy, row in enumerate(screen):
+            ty = self.top + yy * ch
+            # sfondi: una rect per sequenza di celle con lo stesso colore (diverso da quello di pagina)
+            xx = 0
+            while xx < self.cols:
+                bg = row[xx][1][1]
+                start = xx
+                while xx < self.cols and row[xx][1][1] == bg:
+                    xx += 1
+                if bg != page_bg:
+                    rects.append('<rect x="{}" y="{}" width="{}" height="{}" class="{}"/>'.format(
+                        num(pad + start * cw), num(ty), num((xx - start) * cw + 0.3), num(ch + 0.3), self.cls(bg)))
+            # testo: una <text> per sequenza con stessi attributi, lunghezza imposta sulla griglia
+            xx = 0
+            while xx < self.cols:
+                key = row[xx][1]
+                start = xx
+                chars = []
+                while xx < self.cols and row[xx][1] == key:
+                    chars.append(row[xx][0])
+                    xx += 1
+                text = "".join(chars)
+                if not text.strip():
+                    continue
+                fg, _, bold, italic, underline = key
+                style = (' font-weight="bold"' if bold else "") + (' font-style="italic"' if italic else "") + \
+                    (' text-decoration="underline"' if underline else "")
+                texts.append(
+                    '<text x="{}" y="{}" class="{}" textLength="{}" lengthAdjust="spacingAndGlyphs"{}>{}</text>'.format(
+                        num(pad + start * cw), num(ty + ch * 0.8), self.cls(fg), num(len(chars) * cw), style,
+                        html.escape(text)))
+        return rects, texts
+
+    def document(self, page_bg, body, extra_css=""):
+        style = ("text{{font-family:Menlo,'SF Mono','DejaVu Sans Mono',Consolas,monospace;"
+                 "font-size:{}px;white-space:pre}}").format(self.font_size)
+        style += "".join(".{}{{fill:{}}}".format(k, c) for c, k in self.colors.items()) + extra_css
+        out = [
+            '<svg xmlns="http://www.w3.org/2000/svg" width="{:.0f}" height="{:.0f}" viewBox="0 0 {} {}">'.format(
+                self.width, self.height, num(self.width), num(self.height)),
+            "<style>" + style + "</style>",
+            '<rect width="100%" height="100%" rx="6" fill="{}"/>'.format(hexcolor(page_bg)),
+        ]
+        if self.title:
+            out.append('<text x="{}" y="{}" fill="#9a9a9a">{}</text>'.format(
+                num(self.pad), num(self.pad + self.font_size), html.escape(self.title)))
+        out.extend(body)
+        out.append("</svg>")
+        return "\n".join(out) + "\n"
+
+
+def page_background(screen):
+    return screen[0][0][1][1] if screen and screen[0] else DEFAULT_BG
+
+
 def to_svg(screen, cols, rows, font_size, title):
-    cw = font_size * 0.6
-    ch = font_size * 1.25
-    pad = 8
-    top = pad + (ch + 6 if title else 0)
-    width = cols * cw + 2 * pad
-    height = rows * ch + top + pad
-    page_bg = screen[0][0][1][1] if screen and screen[0] else DEFAULT_BG
-    out = [
-        '<svg xmlns="http://www.w3.org/2000/svg" width="{:.0f}" height="{:.0f}" viewBox="0 0 {:.1f} {:.1f}">'.format(width, height, width, height),
-        "<style>text{{font-family:Menlo,'SF Mono','DejaVu Sans Mono',Consolas,monospace;font-size:{}px;white-space:pre}}</style>".format(font_size),
-        '<rect width="100%" height="100%" rx="6" fill="{}"/>'.format(hexcolor(page_bg)),
-    ]
-    if title:
-        out.append('<text x="{:.1f}" y="{:.1f}" fill="#9a9a9a">{}</text>'.format(pad, pad + font_size, html.escape(title)))
-    for yy, row in enumerate(screen):
-        ty = top + yy * ch
-        # sfondi: una rect per sequenza di celle con lo stesso colore (diverso da quello di pagina)
-        xx = 0
-        while xx < cols:
-            bg = row[xx][1][1]
-            start = xx
-            while xx < cols and row[xx][1][1] == bg:
-                xx += 1
-            if bg != page_bg:
-                out.append('<rect x="{:.1f}" y="{:.1f}" width="{:.1f}" height="{:.1f}" fill="{}"/>'.format(
-                    pad + start * cw, ty, (xx - start) * cw + 0.3, ch + 0.3, hexcolor(bg)))
-        # testo: una <text> per sequenza con stessi attributi, lunghezza imposta sulla griglia
-        xx = 0
-        while xx < cols:
-            key = row[xx][1]
-            start = xx
-            chars = []
-            while xx < cols and row[xx][1] == key:
-                chars.append(row[xx][0])
-                xx += 1
-            text = "".join(chars)
-            if not text.strip():
-                continue
-            fg, _, bold, italic, underline = key
-            span = len(chars)
-            style = (' font-weight="bold"' if bold else "") + (' font-style="italic"' if italic else "") + \
-                (' text-decoration="underline"' if underline else "")
-            out.append('<text x="{:.1f}" y="{:.1f}" fill="{}" textLength="{:.1f}" lengthAdjust="spacingAndGlyphs"{}>{}</text>'.format(
-                pad + start * cw, ty + ch * 0.8, hexcolor(fg), span * cw, style, html.escape(text)))
-    out.append("</svg>")
-    return "\n".join(out) + "\n"
+    cv = Canvas(cols, rows, font_size, title)
+    page_bg = page_background(screen)
+    rects, texts = cv.elements(screen, page_bg)
+    return cv.document(page_bg, rects + texts)
+
+
+def to_animated_svg(screens, cols, rows, font_size, title, frame_ms):
+    """SVG animato: ogni elemento distinto compare una sola volta, in un gruppo per insieme di fotogrammi in cui
+    e' visibile; un'animazione CSS a gradini (step-end, in loop) accende e spegne ogni gruppo. Niente script:
+    funziona anche dentro <img>, per esempio nel README su GitHub."""
+    n = len(screens)
+    cv = Canvas(cols, rows, font_size, title)
+    page_bg = page_background(screens[0])
+    layers = ({}, {})  # elemento -> maschera dei fotogrammi, sfondi e testi separati (i testi sopra)
+    for f, screen in enumerate(screens):
+        for layer, elems in zip(layers, cv.elements(screen, page_bg)):
+            for e in elems:
+                layer[e] = layer.get(e, 0) | (1 << f)
+    full = (1 << n) - 1
+    masks = {}
+    body = []
+    for layer in layers:
+        groups = {}
+        for e, m in layer.items():
+            groups.setdefault(m, []).append(e)
+        if full in groups:
+            body.extend(groups.pop(full))
+        for m, elems in groups.items():
+            k = masks.setdefault(m, "k%d" % len(masks))
+            body.append('<g class="a {}">'.format(k))
+            body.extend(elems)
+            body.append("</g>")
+    css = [".a{{opacity:0;animation:{}ms step-end infinite}}".format(frame_ms * n)]
+    for m, k in masks.items():
+        steps, prev = [], None
+        for f in range(n):
+            on = (m >> f) & 1
+            if on != prev:
+                steps.append("{}%{{opacity:{}}}".format(("%.3f" % (100.0 * f / n)).rstrip("0").rstrip("."), on))
+                prev = on
+        css.append(".{0}{{animation-name:{0}}}@keyframes {0}{{{1}}}".format(k, "".join(steps)))
+    return cv.document(page_bg, body, "".join(css))
+
+
+SYNC_END = b"\x1b[?2026l"  # fine di un aggiornamento con la sincronizzazione del terminale (btop/topo)
+
+
+def record(cmd, cols, rows, frames, interval_ms, warmup_s, extra_s=2.0):
+    """Esegue `cmd` in un pty COLS x ROWS e ne registra l'uscita. Restituisce (testo, offset dei fotogrammi):
+    il primo fotogramma e' il primo aggiornamento completo dopo `warmup_s`, poi uno ogni `interval_ms` circa."""
+    import fcntl
+    import os
+    import pty
+    import select
+    import signal
+    import struct
+    import termios
+    import time
+
+    pid, fd = pty.fork()
+    if pid == 0:
+        try:
+            fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+            os.environ["TERM"] = "xterm-256color"
+            os.environ["COLORTERM"] = "truecolor"
+            os.environ.setdefault("LANG", "en_US.UTF-8")
+            os.execvp(cmd[0], cmd)
+        finally:
+            os._exit(127)
+    data = bytearray()
+    chunks = []  # (offset di fine, istante)
+    t0 = time.monotonic()
+    stop = warmup_s + frames * interval_ms / 1000.0 + extra_s
+    while time.monotonic() - t0 < stop:
+        r, _, _ = select.select([fd], [], [], 0.05)
+        if not r:
+            continue
+        try:
+            got = os.read(fd, 65536)
+        except OSError:
+            break
+        if not got:
+            break
+        data += got
+        chunks.append((len(data), time.monotonic() - t0))
+    try:
+        os.write(fd, b"q")
+        time.sleep(0.5)
+        if os.waitpid(pid, os.WNOHANG)[0] == 0:
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
+    except (OSError, ChildProcessError):
+        pass
+    os.close(fd)
+
+    # fine di ogni aggiornamento: dopo SYNC_END se c'e', altrimenti la fine di ogni lettura
+    ends = []
+    pos = data.find(SYNC_END)
+    if pos == -1:
+        ends = chunks
+    else:
+        ci = 0
+        while pos != -1:
+            end = pos + len(SYNC_END)
+            while chunks[ci][0] < end:
+                ci += 1
+            ends.append((end, chunks[ci][1]))
+            pos = data.find(SYNC_END, end)
+    picked, last_t = [], None
+    for off, t in ends:
+        if t < warmup_s or (last_t is not None and t < last_t + interval_ms * 0.0008):
+            continue
+        picked.append(off)
+        last_t = t
+        if len(picked) == frames:
+            break
+    if len(picked) < frames:
+        raise SystemExit("solo {} fotogrammi su {}: aumentare la durata o controllare il comando".format(
+            len(picked), frames))
+    # decodifica in un solo passaggio; un offset che cade dentro un carattere UTF-8 (fine di una lettura)
+    # diventa il confine di carattere precedente, perche' il decoder incrementale trattiene i byte parziali
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+    parts, nchars, prev, marks = [], 0, 0, []
+    for off in picked:
+        part = decoder.decode(bytes(data[prev:off]))
+        parts.append(part)
+        nchars += len(part)
+        marks.append(nchars)
+        prev = off
+    parts.append(decoder.decode(bytes(data[prev:]), final=True))
+    return "".join(parts), marks
+
+
+def parse_size(s):
+    """Tipo argparse per COLONNExRIGHE (es. 120x40)."""
+    cols, _, rows = s.lower().partition("x")
+    try:
+        size = int(cols), int(rows)
+    except ValueError:
+        raise argparse.ArgumentTypeError("dimensione non valida: {!r} (atteso COLONNExRIGHE, es. 120x40)".format(s))
+    if min(size) < 1:
+        raise argparse.ArgumentTypeError("dimensione non valida: {!r}".format(s))
+    return size
+
+
+def positive_int(s):
+    """Tipo argparse per un intero >= 1."""
+    try:
+        v = int(s)
+    except ValueError:
+        raise argparse.ArgumentTypeError("non e' un intero: {!r}".format(s))
+    if v < 1:
+        raise argparse.ArgumentTypeError("deve essere >= 1: {}".format(v))
+    return v
+
+
+def main_animate(argv):
+    ap = argparse.ArgumentParser(prog="ansi2svg.py animate",
+                                 description="SVG animato da piu' catture ANSI (una per fotogramma).")
+    ap.add_argument("captures", nargs="+")
+    ap.add_argument("--size", required=True, type=parse_size, help="COLONNExRIGHE, es. 120x40")
+    ap.add_argument("-o", "--out", required=True)
+    ap.add_argument("--frame-ms", type=positive_int, default=1000)
+    ap.add_argument("--title", default="")
+    ap.add_argument("--font-size", type=int, default=14)
+    a = ap.parse_args(argv)
+    cols, rows = a.size
+    screens = [emulate(open(p, "rb").read().decode("utf-8", "replace"), cols, rows) for p in a.captures]
+    write(a.out, to_animated_svg(screens, cols, rows, a.font_size, a.title, a.frame_ms))
+    return 0
+
+
+def main_record(argv):
+    ap = argparse.ArgumentParser(
+        prog="ansi2svg.py record",
+        description="Esegue un programma a schermo intero in un pty, ne cattura N aggiornamenti "
+                    "e scrive un SVG animato.",
+        epilog="Esempio: python3 -I tools/ansi2svg.py record --size 120x40 --frames 20 --warmup 40 "
+               "-o docs/topo-demo.svg -- build/topo -c demo.conf")
+    ap.add_argument("--size", required=True, type=parse_size, help="COLONNExRIGHE, es. 120x40")
+    ap.add_argument("-o", "--out", required=True, help="SVG animato")
+    ap.add_argument("--frames", type=positive_int, default=20)
+    ap.add_argument("--frame-ms", type=positive_int, default=1000,
+                    help="durata di un fotogramma e distanza tra le catture")
+    ap.add_argument("--warmup", type=float, default=10.0, help="secondi prima del primo fotogramma (riempie i grafici)")
+    ap.add_argument("--still", help="scrive anche l'ultimo fotogramma come SVG statico")
+    ap.add_argument("--raw", help="salva il flusso ANSI registrato")
+    ap.add_argument("--title", default="")
+    ap.add_argument("--font-size", type=int, default=14)
+    ap.add_argument("cmd", nargs=argparse.REMAINDER, help="-- programma e argomenti")
+    a = ap.parse_args(argv)
+    cmd = a.cmd[1:] if a.cmd[:1] == ["--"] else a.cmd
+    if not cmd:
+        ap.error("manca il comando dopo --")
+    cols, rows = a.size
+    text, marks = record(cmd, cols, rows, a.frames, a.frame_ms, a.warmup)
+    if a.raw:
+        write(a.raw, text)
+    screens = emulate(text, cols, rows, marks)
+    write(a.out, to_animated_svg(screens, cols, rows, a.font_size, a.title, a.frame_ms))
+    if a.still:
+        write(a.still, to_svg(screens[-1], cols, rows, a.font_size, a.title))
+    return 0
+
+
+def write(path, content):
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["animate"]:
+        return main_animate(argv[1:])
+    if argv[:1] == ["record"]:
+        return main_record(argv[1:])
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0],
+                                 epilog="Altri modi: 'ansi2svg.py record -h' e 'ansi2svg.py animate -h'.")
     ap.add_argument("capture")
     ap.add_argument("cols", type=int)
     ap.add_argument("rows", type=int)
@@ -291,8 +559,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     data = open(a.capture, "rb").read().decode("utf-8", "replace")
     screen = emulate(data, a.cols, a.rows)
-    with open(a.out, "w", encoding="utf-8") as f:
-        f.write(to_svg(screen, a.cols, a.rows, a.font_size, a.title))
+    write(a.out, to_svg(screen, a.cols, a.rows, a.font_size, a.title))
     return 0
 
 

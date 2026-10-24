@@ -264,7 +264,7 @@ namespace Config {
 		{"show_ane",			"#* (Apple Silicon) Show the ANE row and the split GPU/ANE graph in the gpu box. ANE power comes from CLPC counters,\n"
 								"#* the \"~x%\" use is an estimate from PMP performance floor requests, not a measured utilization."},
 		{"dram_bw_estimate",	"#* (Apple Silicon) When the direct DRAM bandwidth counters (AMC) are not readable, show the PMP histogram estimate\n"
-								"#* in the mem box as \"DRAM BW ~x GB/s (stima)\". False shows nothing in that case."},
+								"#* in the mem box as \"DRAM BW ~x GB/s (est.)\". False shows nothing in that case."},
 		{"pwr_graphs",			"#* (Apple Silicon) Show one-line graphs in the pwr box, False for numbers only (current and session max)."},
 		{"proc_gpu",			"#* (Apple Silicon) Show a Gpu% column in the process list, from the per-process GPU time of the Metal clients\n"
 								"#* (IORegistry AGXDeviceUserClient, no sudo needed). Costs about 2 ms of CPU per update (~0.2% of a core at 1000 ms)."},

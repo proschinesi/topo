@@ -355,8 +355,11 @@ namespace Gpu {
 	//? topo: opzioni che cambiano l'altezza del box gpu (riga ANE); chiamata all'avvio e dal runner
 	void apply_apple_options() {
 		gpu_b_height_offsets.resize(gpus.size());
+		gpu_pwr_row_hideable.resize(gpus.size());
 		for (size_t i = 0; i < gpus.size(); ++i) {
 			if (gpus[i].unified_memory) gpus[i].show_ane = Config::getB("show_ane");
+			//? topo: con il box pwr visibile la potenza GPU/ANE e' gia' li': riga PWR e watt ANE si tolgono
+			gpu_pwr_row_hideable[i] = gpus[i].unified_memory and gpus[i].supported_functions.pwr_usage;
 			gpu_b_height_offsets[i] = gpus[i].show_ane //? topo: riga ANE
 				+ gpus[i].supported_functions.gpu_utilization
 				+ gpus[i].supported_functions.pwr_usage
@@ -1942,6 +1945,7 @@ namespace Tools {
 //? topo: potenze del SoC per il box pwr, dallo stesso campione AppleSoc del ciclo
 namespace Pwr {
 	pwr_info current_pwr;
+	atomic<bool> has_gpu_data (false), gpu_data_reset (false);
 
 	auto collect(bool no_update) -> pwr_info& {
 		auto& pwr = current_pwr;
@@ -1976,6 +1980,10 @@ namespace Pwr {
 			while (cmp_greater(pwr.history[i].size(), max(Term::width.load(), 40) * 2)) pwr.history[i].pop_front();
 		}
 		pwr.thermal_state = soc.thermal_state;
+		if (const bool has = pwr.available[1] or pwr.available[2]; has != has_gpu_data) {
+			has_gpu_data = has;
+			gpu_data_reset = true;
+		}
 		return pwr;
 	}
 }

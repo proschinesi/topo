@@ -524,7 +524,7 @@ namespace AppleSoc {
 				clpc = check != ClpcCheck::rejected;
 				s.clpc_gpu_w = R.clpc_gpu;
 				s.clpc_check = clpc_check_name(check);
-				s.sources["clpc_check"] = s.clpc_check + (S.clpc_build_ok ? "" : " (build " + S.os_build + " non verificata)");
+				s.sources["clpc_check"] = s.clpc_check + (S.clpc_build_ok ? "" : " (build " + S.os_build + " not verified)");
 			}
 			//? in attesa del controllo (GPU mai abbastanza attiva) i valori CLPC si mostrano marcati "~"
 			const bool clpc_unverified = clpc and S.clpc_validator.state() != ClpcCheck::verified;

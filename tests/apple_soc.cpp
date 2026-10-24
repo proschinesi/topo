@@ -143,7 +143,7 @@ TEST(apple_soc, topology_m2_max) {
 }
 
 TEST(apple_soc, topology_m5_pro) {
-	// macLLM: perflevel0 Super x6, perflevel1 Performance x12; cpu0-11 cluster-type M, cpu12-17 P
+	// M5 Pro: perflevel0 Super x6, perflevel1 Performance x12; cpu0-11 cluster-type M, cpu12-17 P
 	std::vector<PerfLevel> levels {{"Super", 6}, {"Performance", 12}};
 	std::vector<char> types(18, 'M');
 	for (int i = 12; i < 18; i++) types[i] = 'P';

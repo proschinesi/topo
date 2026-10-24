@@ -1,59 +1,49 @@
 ---
 name: Bug report
-about: Create a report to help us improve
+about: Something in topo is wrong, missing or crashes
 labels: bug
 
 ---
 
-**Read the README.md and search for similar issues before posting a bug report!**
-
-<!-- Any bug that can be solved by just reading the [prerequisites](https://github.com/aristocratos/btop#prerequisites) section of the README will likely be ignored. -->
+**Read the README and search for similar issues before posting a bug report.**
 
 **Describe the bug**
 
 <!-- A clear and concise description of what the bug is. -->
 
-**To Reproduce**
+**To reproduce**
 
-<!-- Steps to reproduce the behavior. ->
+<!-- Steps to reproduce the behavior. -->
 
 **Expected behavior**
 
-<!-- A clear and concise description of what you expected to happen. -->
+<!-- What you expected to happen instead. -->
 
 **Screenshots**
 
-<!-- If applicable, add screenshots to help explain your problem. -->
+<!-- If applicable, a screenshot of the topo window. -->
 
-**Info (please complete the following information):**
- - btop++ version: `btop --version`
-   - If using snap: `snap info btop`
- - Binary: [self compiled or static binary from release]
- - Architecture: [x86_64, aarch64, etc.] `uname -m`
- - Platform: [Linux, FreeBSD, OsX]
- - (Linux) Kernel: `uname -r`
- - (OSX/FreeBSD) Os release version:
- - Terminal used:
- - Font used:
+**System**
 
-**Additional context**
+ - Mac model and chip: [e.g. MacBook Pro, M3 Pro 11-core]
+ - macOS version and build: `sw_vers`
+ - topo version: `topo --version`
+ - Installed with: [Homebrew / built from source]
+ - Terminal and font:
 
-<!-- Contents of `~/.local/state/btop.log` -->
+**SoC sample**
 
-<!-- Note: The snap uses: `~/snap/btop/current/.local/state/btop.log` -->
+<!-- Paste the output of the command below. It contains only hardware readings (chip, clusters,
+frequencies, power, temperatures) and the data source of each value, no personal data. -->
 
-<!-- (try running btop with `--debug` flag if btop.log is empty) -->
+```
+topo --dump-soc --count 3
+```
 
-**GDB Backtrace**
+**Log**
 
-<!-- If btop++ is crashing at start the following steps could be helpful: -->
+<!-- Contents of `~/.local/state/topo.log` (run `topo --debug` if it is empty). -->
 
-<!-- (Extra helpful if compiled with `make OPTFLAGS="-O0 -g"`) -->
+**Crash backtrace**
 
-<!-- 1. run (linux): `gdb btop` (macos): `lldb btop` -->
-
-<!-- 2. `r` to run, wait for crash and press enter if prompted, CTRL+L to clear screen if needed. -->
-
-<!-- 3. (gdb): `thread apply all bt` (lldb): `bt all` to get backtrace for all threads -->
-
-<!-- 4. Copy and paste the backtrace here: -->
+<!-- If topo crashes: `lldb topo`, then `r`; after the crash `bt all`, and paste the output here. -->

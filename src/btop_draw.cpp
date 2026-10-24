@@ -1130,6 +1130,7 @@ namespace Gpu {
 	vector<Draw::Meter> enc_meter_vec = {};
 	vector<string> box = {};
 	std::unordered_map<unsigned long, bool> ane_split; //? topo: grafico grande diviso GPU/ANE
+	vector<bool> pwr_row_hidden = {}; //? topo: box pwr visibile -> niente riga PWR e watt ANE (per pannello mostrato)
 
     string draw(const gpu_info& gpu, unsigned long index, bool force_redraw, bool data_same) {
 		if (Runner::stopping) return "";
@@ -1158,6 +1159,7 @@ namespace Gpu {
 		string out;
 		int height = gpu_b_height_offsets[index] + 4;
 		out.reserve(width * height);
+		const bool hide_pwr = index < pwr_row_hidden.size() and pwr_row_hidden[index];
 
 		//* Redraw elements not needed to be updated every cycle
 		if (redraw[index]) {
@@ -1195,7 +1197,7 @@ namespace Gpu {
 			}
 			if (gpu.supported_functions.temp_info)
 				temp_graph = Draw::Graph{6, 1, "temp", gpu.temp, graph_symbol, false, false, gpu.temp_max, -23};
-			if (gpu.supported_functions.pwr_usage)
+			if (gpu.supported_functions.pwr_usage and not hide_pwr)
 				pwr_meter = Draw::Meter{b_width - (gpu.supported_functions.pwr_state and gpu.pwr_state != 32 ? 25 : 12), "cached"};
 			if (gpu.supported_functions.mem_utilization)
 				mem_util_graph = Draw::Graph{b_width/2 - 1, 2, "free", gpu.mem_utilization_percent, graph_symbol, 0, 0, 100, 4}; // offset so the graph isn't empty at 0-5% utilization
@@ -1249,7 +1251,7 @@ namespace Gpu {
 		}
 
 		//? Power usage meter, power state
-		if (gpu.supported_functions.pwr_usage) {
+		if (gpu.supported_functions.pwr_usage and not hide_pwr) {
 			out += Mv::to(b_y + rows_used, b_x + 1) + Theme::c("main_fg") + Fx::b + "PWR " + pwr_meter(safeVal(gpu.gpu_percent, "gpu-pwr-totals"s).back())
 				+ Theme::g("cached").at(clamp(safeVal(gpu.gpu_percent, "gpu-pwr-totals"s).back(), 0ll, 100ll))
 				+ fmt::format("{:>5.{}f}", gpu.pwr_usage / 1000.0, gpu.pwr_usage < 10'000 ? 2 : gpu.pwr_usage < 100'000 ? 1 : 0) + Theme::c("main_fg") + 'W';
@@ -1259,23 +1261,27 @@ namespace Gpu {
 		}
 
 		//? topo (Apple Silicon): riga ANE = barra e mini-grafico della potenza in % del fondo scala
-		//? (massimo di sessione, almeno 1 W), watt CLPC e "~x%" = stima d'uso dai floor PMP (non misurata)
+		//? (massimo di sessione, almeno 1 W), watt CLPC e "~x%" = stima d'uso dai floor PMP (non misurata).
+		//? Con il box pwr visibile i watt stanno li': la barra si allunga al loro posto.
 		if (gpu.show_ane) {
 			static vector<Draw::Meter> ane_meters;
 			static vector<Draw::Graph> ane_graphs;
 			static vector<int> ane_widths;
 			if (ane_meters.size() <= index) { ane_meters.resize(index + 1); ane_graphs.resize(index + 1); ane_widths.resize(index + 1, -1); }
-			if (ane_widths[index] != b_width or redraw[index]) {
-				ane_meters[index] = Draw::Meter{max(1, b_width - 25), "upload"};
+			const int meter_width = max(1, b_width - 25 + (hide_pwr ? 7 : 0));
+			if (ane_widths[index] != meter_width or redraw[index]) {
+				ane_meters[index] = Draw::Meter{meter_width, "upload"};
 				ane_graphs[index] = Draw::Graph{5, 1, "upload", gpu.ane_percent, graph_symbol};
-				ane_widths[index] = b_width;
+				ane_widths[index] = meter_width;
 			}
 			const long long pct = gpu.ane_percent.empty() ? 0 : gpu.ane_percent.back();
-			const string ane_w = gpu.ane_power_w ? fmt::format("{}{:.2f}W", gpu.ane_power_unverified ? "~" : "", *gpu.ane_power_w) : "—";
 			const string ane_use = gpu.ane_usage_estimate_pct ? fmt::format("~{:.0f}%", *gpu.ane_usage_estimate_pct) : "—";
-			out += Mv::to(b_y + rows_used, b_x + 1) + Theme::c("main_fg") + Fx::b + "ANE " + Fx::ub + ane_meters[index](pct)
-				+ (gpu.ane_power_w ? Theme::g("upload").at(clamp(pct, 0ll, 100ll)) : Theme::c("inactive_fg")) + rjust(ane_w, 7)
-				+ ' ' + Theme::c("inactive_fg") + graph_bg * 5 + Mv::l(5) + ane_graphs[index](gpu.ane_percent, data_same or redraw[index])
+			out += Mv::to(b_y + rows_used, b_x + 1) + Theme::c("main_fg") + Fx::b + "ANE " + Fx::ub + ane_meters[index](pct);
+			if (not hide_pwr) {
+				const string ane_w = gpu.ane_power_w ? fmt::format("{}{:.2f}W", gpu.ane_power_unverified ? "~" : "", *gpu.ane_power_w) : "—";
+				out += (gpu.ane_power_w ? Theme::g("upload").at(clamp(pct, 0ll, 100ll)) : Theme::c("inactive_fg")) + rjust(ane_w, 7);
+			}
+			out += ' ' + Theme::c("inactive_fg") + graph_bg * 5 + Mv::l(5) + ane_graphs[index](gpu.ane_percent, data_same or redraw[index])
 				+ Theme::c("inactive_fg") + rjust(ane_use, 5);
 			rows_used++;
 		}
@@ -1618,14 +1624,14 @@ namespace Mem {
 		}
 
 		//? topo: banda DRAM sul bordo inferiore della sezione mem. Contatori AMC se il kernel li espone,
-		//? altrimenti la stima PMP con "~" e "(stima)"; senza dato, niente etichetta.
+		//? altrimenti la stima PMP con "~" e "(est.)"; senza dato, niente etichetta.
 		if (mem.dram_bw_gbs or mem.dram_bw_estimate_gbs) {
 			const int field = max(0, mem_width - 4);
 			string label;
 			if (mem.dram_bw_gbs)
 				label = fmt::format("DRAM BW {:.1f} GB/s", *mem.dram_bw_gbs);
 			else
-				label = fmt::format("DRAM BW ~{:.1f} GB/s (stima)", *mem.dram_bw_estimate_gbs);
+				label = fmt::format("DRAM BW ~{:.1f} GB/s (est.)", *mem.dram_bw_estimate_gbs);
 			if (cmp_greater(ulen(label), field)) label = mem.dram_bw_gbs ? fmt::format("BW {:.1f}G/s", *mem.dram_bw_gbs) : fmt::format("BW ~{:.1f}G/s", *mem.dram_bw_estimate_gbs);
 			if (cmp_less_equal(ulen(label) + 2, field)) {
 				out += Mv::to(y + height - 1, x + 2) + Theme::c("mem_box") + Symbols::title_left_down + Theme::c("title") + Fx::b + label + Fx::ub
@@ -2702,6 +2708,7 @@ namespace Draw {
 			gpu_meter_vec.resize(shown);
 			pwr_meter_vec.resize(shown);
 			enc_meter_vec.resize(shown);
+			pwr_row_hidden.assign(shown, false);
 			redraw.resize(shown);
 			total_height = 0;
 			for (auto i = 0; i < shown; ++i) {
@@ -2722,6 +2729,13 @@ namespace Draw {
 				b_height_vec[i] = gpu_b_height_offsets[shown_panels[i]] + 2;
 				height += (height+Cpu::height == Term::height-1);
 				height = max(height, b_height_vec[i] + 2);
+			#ifdef SOC_PWR_BOX
+				//? topo: con il box pwr la riga PWR sparisce dal riquadro interno; l'altezza del box resta quella
+				//? calcolata sopra, cosi' la riga liberata resta al grafico grande GPU/ANE
+				pwr_row_hidden[i] = boxes.contains("pwr") and Pwr::has_gpu_data
+					and cmp_less(shown_panels[i], gpu_pwr_row_hideable.size()) and gpu_pwr_row_hideable[shown_panels[i]];
+				b_height_vec[i] -= pwr_row_hidden[i];
+			#endif
 				x_vec[i] = 1; y_vec[i] = 1 + total_height + (not Config::getB("cpu_bottom"))*Cpu::shown*Cpu::height;
 				box[i] = createBox(x_vec[i], y_vec[i], width, height, Theme::c("cpu_box"), true, std::string("gpu") + (char)(shown_panels[i]+'0'), "", (shown_panels[i]+5)%10); // TODO gpu_box
 				b_width = clamp(width/2, min_width, 65);
