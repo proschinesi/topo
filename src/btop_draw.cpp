@@ -12,7 +12,7 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 
-   Modified for sitop (fork of btop for Apple Silicon), 2026: see NOTICE.
+   Modified for topo (fork of btop for Apple Silicon), 2026: see NOTICE.
 
 indent = tab
 tab-size = 4
@@ -171,8 +171,8 @@ namespace Draw {
 				}
 				if (++z < Global::Banner_src.size()) banner += Mv::l(ulen(line[1])) + Mv::d(1);
 			}
-			//? sitop: "sitop v0.1.0" al posto di "v1.4.7" (la versione btop resta in --version e nel config)
-			const string version_label = Global::Name + " v" + Global::SitopVersion;
+			//? topo: "topo v0.1.0" al posto di "v1.4.7" (la versione btop resta in --version e nel config)
+			const string version_label = Global::Name + " v" + Global::AppVersion;
 			banner += Mv::r(std::max(0, 19 - static_cast<int>(version_label.size())))
 					+ Theme::c("main_fg") + Fx::b + Fx::i + version_label + Fx::reset;
 		}
@@ -553,7 +553,7 @@ namespace Cpu {
 	int b_columns, b_column_size;
 	int b_x, b_y, b_width, b_height;
 	float max_observed_pwr = 1.0f;
-	bool cluster_headers = true; //? sitop: intestazioni dei livelli Apple Silicon (tolte se manca spazio)
+	bool cluster_headers = true; //? topo: intestazioni dei livelli Apple Silicon (tolte se manca spazio)
 
 	int graph_up_height, graph_low_height;
 	int graph_up_width, graph_low_width;
@@ -582,7 +582,7 @@ namespace Cpu {
 		bool show_temps = (Config::getB("check_temp") and got_sensors);
 		bool show_watts = (Config::getB("show_cpu_watts") and supports_watts);
 		auto single_graph = Config::getB("cpu_single_graph");
-		//? sitop: con i livelli Apple Silicon la temperatura e' per livello (intestazione), non per core
+		//? topo: con i livelli Apple Silicon la temperatura e' per livello (intestazione), non per core
 		const bool apple_clusters = not cpu.clusters.empty();
 		bool hide_cores = show_temps and (cpu_temp_only or not Config::getB("show_coretemp"));
 		const int extra_width = apple_clusters ? 0 : (hide_cores ? max(6, 6 * b_column_size) : (b_columns == 1 && !show_temps) ? 8 : 0);
@@ -890,9 +890,16 @@ namespace Cpu {
 				out += temp_color + rjust(to_string(temp), 4) + Theme::c("main_fg") + unit;
 			}
 
-			if (show_watts) {
+			if (show_watts and cpu.watts_state == 2) {
+				//? topo: dato assente da piu' di due cicli
+				out += Theme::c("inactive_fg") + rjust("—", 5) + ' ';
+			}
+			else if (show_watts) {
 				const auto clamped_watts = clamp(cpu.usage_watts, 0.0f, 999.0f);
 				string cwatts = fmt::format(" {:>4.{}f}", clamped_watts, clamped_watts < 9.995f ? 2 : clamped_watts < 99.95f ? 1 : 0);
+				//? topo: valore CLPC non ancora verificato, "~" con una cifra in meno per restare nei 6 caratteri
+				if (cpu.watts_state == 1)
+					cwatts = rjust('~' + fmt::format("{:.{}f}", clamped_watts, clamped_watts < 9.95f ? 1 : 0), 5);
 				string cwatts_post = "W";
 
 				max_observed_pwr = max(max_observed_pwr, clamped_watts);
@@ -916,7 +923,7 @@ namespace Cpu {
 		};
 
 		//? Core text and graphs
-		//? sitop: con i livelli Apple Silicon la sequenza e' [intestazione livello, core del livello...] per ogni livello
+		//? topo: con i livelli Apple Silicon la sequenza e' [intestazione livello, core del livello...] per ogni livello
 		vector<int> items;
 		if (apple_clusters) {
 			for (size_t k = 0; k < cpu.clusters.size(); k++) {
@@ -929,7 +936,8 @@ namespace Cpu {
 		}
 		const int items_count = static_cast<int>(items.size());
 		const int rows_per_col = static_cast<int>(ceil((double)items_count / b_columns));
-		const int cell_width = b_width / max(1, b_columns);
+		//? larghezza = celle * colonne + 1 (vedi calcSizes): il +1 e' il bordo destro, anche con una sola colonna
+		const int cell_width = (b_width - 1) / max(1, b_columns);
 
 		//? intestazione di un livello: "S 4.4GHz 81°C", accorciata se la cella e' stretta; "—" se manca il dato
 		auto cluster_header = [&](const cluster_info& c) {
@@ -1017,6 +1025,9 @@ namespace Cpu {
 				}
 			}
 
+			//? topo: cella piu' larga del contenuto (riquadro allargato): spazi fino al divisore
+			if (apple_clusters)
+				out += string(max(0, cell_width - 1 - (b_column_size == 0 ? 7 : b_column_size == 1 ? 13 : 19)), ' ');
 			out += Theme::c("div_line") + Symbols::v_line;
 
 			if ((++cy > rows_per_col or cy == max_row) and idx != items_count - 1) {
@@ -1069,7 +1080,7 @@ namespace Cpu {
 				if (gpus[i].supported_functions.mem_total) {
 						out += Theme::c("inactive_fg") + '/' + Theme::c("main_fg") + ljust(floating_humanizer(gpus[i].mem_total, true), 4);
 				}
-				//? sitop: temperatura GPU assente -> "—", mai 0 °C
+				//? topo: temperatura GPU assente -> "—", mai 0 °C
 				if (show_temps and gpus[i].supported_functions.temp_info and (gpus[i].temp.empty() or not gpus[i].temp_available)) {
 					out += ' ' + Theme::c("inactive_fg") + rjust("—", b_columns > 1 ? 9 : 4) + Theme::c("main_fg");
 				}
@@ -1118,7 +1129,7 @@ namespace Gpu {
 	vector<Draw::Meter> pwr_meter_vec = {};
 	vector<Draw::Meter> enc_meter_vec = {};
 	vector<string> box = {};
-	std::unordered_map<unsigned long, bool> ane_split; //? sitop: grafico grande diviso GPU/ANE
+	std::unordered_map<unsigned long, bool> ane_split; //? topo: grafico grande diviso GPU/ANE
 
     string draw(const gpu_info& gpu, unsigned long index, bool force_redraw, bool data_same) {
 		if (Runner::stopping) return "";
@@ -1154,7 +1165,7 @@ namespace Gpu {
 
 			graph_up_height = single_graph ? b_height_vec[index] : (b_height_vec[index] + 1) / 2;
 			int graph_low_height = single_graph ? 0 : b_height_vec[index] - graph_up_height;
-			//? sitop (Apple Silicon): GPU sopra, ANE sotto (rovesciato, come upload nel box net) con riga divisoria
+			//? topo (Apple Silicon): GPU sopra, ANE sotto (rovesciato, come upload nel box net) con riga divisoria
 			ane_split[index] = gpu.show_ane and b_height_vec[index] >= 3;
 			if (ane_split[index]) {
 				graph_up_height = (b_height_vec[index] - 1 + 1) / 2;
@@ -1209,7 +1220,7 @@ namespace Gpu {
 				+ Theme::g("cpu").at(clamp(safeVal(gpu.gpu_percent, "gpu-totals"s).back(), 0ll, 100ll)) + rjust(to_string(safeVal(gpu.gpu_percent, "gpu-totals"s).back()), 5) + Theme::c("main_fg") + '%';
 
 			//? Temperature graph, I assume the device supports utilization if it supports temperature
-			//? sitop: temperatura assente -> "—" (mai 0 °C)
+			//? topo: temperatura assente -> "—" (mai 0 °C)
 			if (show_temps and (gpu.temp.empty() or not gpu.temp_available)) {
 				out += ' ' + Theme::c("inactive_fg") + graph_bg * 6 + rjust("—", 4) + Theme::c("main_fg") + "  ";
 			}
@@ -1224,7 +1235,7 @@ namespace Gpu {
 		}
 
 		if (gpu.show_ane) {
-			//? sitop: frequenza attuale/massima nel titolo, "—" se manca l'attuale
+			//? topo: frequenza attuale/massima nel titolo, "—" se manca l'attuale
 			string clk = (gpu.gpu_clock_speed > 0 ? to_string(gpu.gpu_clock_speed) : string("—"))
 				+ (gpu.gpu_clock_max > 0 ? '/' + to_string(gpu.gpu_clock_max) : string("")) + " MHz";
 			const int field = 13; //? "1620/1620 MHz"
@@ -1247,7 +1258,7 @@ namespace Gpu {
 			rows_used++;
 		}
 
-		//? sitop (Apple Silicon): riga ANE = barra e mini-grafico della potenza in % del fondo scala
+		//? topo (Apple Silicon): riga ANE = barra e mini-grafico della potenza in % del fondo scala
 		//? (massimo di sessione, almeno 1 W), watt CLPC e "~x%" = stima d'uso dai floor PMP (non misurata)
 		if (gpu.show_ane) {
 			static vector<Draw::Meter> ane_meters;
@@ -1260,7 +1271,7 @@ namespace Gpu {
 				ane_widths[index] = b_width;
 			}
 			const long long pct = gpu.ane_percent.empty() ? 0 : gpu.ane_percent.back();
-			const string ane_w = gpu.ane_power_w ? fmt::format("{:.2f}W", *gpu.ane_power_w) : "—";
+			const string ane_w = gpu.ane_power_w ? fmt::format("{}{:.2f}W", gpu.ane_power_unverified ? "~" : "", *gpu.ane_power_w) : "—";
 			const string ane_use = gpu.ane_usage_estimate_pct ? fmt::format("~{:.0f}%", *gpu.ane_usage_estimate_pct) : "—";
 			out += Mv::to(b_y + rows_used, b_x + 1) + Theme::c("main_fg") + Fx::b + "ANE " + Fx::ub + ane_meters[index](pct)
 				+ (gpu.ane_power_w ? Theme::g("upload").at(clamp(pct, 0ll, 100ll)) : Theme::c("inactive_fg")) + rjust(ane_w, 7)
@@ -1288,9 +1299,11 @@ namespace Gpu {
 					* (1 + 2*(gpu.supported_functions.mem_total and gpu.supported_functions.mem_used) + 2*gpu.supported_functions.mem_utilization);
 
 				//? Used graph, memory section header, total vram
-				//? sitop: su Apple Silicon la memoria e' unificata (la stessa RAM di sistema): etichetta "unified"
+				//? topo: su Apple Silicon la memoria e' unificata (la stessa RAM di sistema): etichetta "unified"
 				const string mem_label = gpu.unified_memory ? "unified" : "vram";
-				out += Theme::c("div_line") + Symbols::div_left + Symbols::h_line + Symbols::title_left + Fx::b + Theme::c("title") + mem_label + Theme::c("div_line") + Fx::ub + Symbols::title_right
+				//? topo: se la testata cade sulla riga divisoria gpu/ane, il giunto col bordo e' un incrocio
+				const bool on_ane_divider = ane_split[index] and b_y + rows_used == y + graph_up_height + 1;
+				out += Theme::c("div_line") + (on_ane_divider ? string("┼") : Symbols::div_left) + Symbols::h_line + Symbols::title_left + Fx::b + Theme::c("title") + mem_label + Theme::c("div_line") + Fx::ub + Symbols::title_right
 					+  Symbols::h_line*(b_width/2-4-(int)mem_label.size()) + Symbols::div_up + Mv::d(offset)+Mv::l(1) + Symbols::div_down + Mv::l(1)+Mv::u(1) + (Symbols::v_line + Mv::l(1)+Mv::u(1))*(offset-1) + Symbols::div_up
 					+  Symbols::h_line + Theme::c("title") + "Used:" + Theme::c("div_line")
 					+  Symbols::h_line*(b_width/2+b_width%2-9-used_memory_string.size()) + Theme::c("title") + used_memory_string + Theme::c("div_line") + Symbols::h_line + Symbols::div_right
@@ -1604,7 +1617,7 @@ namespace Mem {
 			if (cy < height - 2) out += Mv::to(y+1+cy, x+1+cx) + divider;
 		}
 
-		//? sitop: banda DRAM sul bordo inferiore della sezione mem. Contatori AMC se il kernel li espone,
+		//? topo: banda DRAM sul bordo inferiore della sezione mem. Contatori AMC se il kernel li espone,
 		//? altrimenti la stima PMP con "~" e "(stima)"; senza dato, niente etichetta.
 		if (mem.dram_bw_gbs or mem.dram_bw_estimate_gbs) {
 			const int field = max(0, mem_width - 4);
@@ -1626,8 +1639,8 @@ namespace Mem {
 
 }
 
-#ifdef SITOP_PWR_BOX
-//? sitop: box pwr, potenze del SoC Apple Silicon: due colonne di tre serie, grafico braille a una riga,
+#ifdef SOC_PWR_BOX
+//? topo: box pwr, potenze del SoC Apple Silicon: due colonne di tre serie, grafico braille a una riga,
 //? valore attuale e massimo di sessione; lo stato termico nel bordo superiore.
 namespace Pwr {
 	int min_width = 44, min_height = 5;
@@ -1638,6 +1651,9 @@ namespace Pwr {
 	array<Draw::Graph, series_count> graphs;
 	array<long long, series_count> graph_scale {}; //? mW: fondo scala dei grafici
 	int cell_width = 0, graph_width = 0;
+	bool show_max = true; //? colonna "max" (massimo di sessione), tolta se la cella e' stretta
+	//? larghezze fisse di una cella: nome 5 + attuale 7 (+ " max" 4 + massimo 7)
+	constexpr int cell_fixed_min = 12, cell_fixed_max = 23;
 
 	//? fondo scala "tondo" (1, 2, 5 x 10^k mW) sopra il massimo visto, cosi' il grafico non si riscala a ogni picco
 	static long long nice_scale(double watts) {
@@ -1669,7 +1685,9 @@ namespace Pwr {
 		if (redraw) {
 			out += box;
 			cell_width = (width - 3) / 2;
-			graph_width = max(0, cell_width - 23);
+			show_max = cell_width >= cell_fixed_max;
+			//? pwr_graphs = false: solo numeri
+			graph_width = Config::getB("pwr_graphs") ? max(0, cell_width - (show_max ? cell_fixed_max : cell_fixed_min)) : 0;
 			for (size_t i = 0; i < series_count; i++) {
 				graph_scale[i] = nice_scale(pwr.session_max[i]);
 				if (graph_width > 0)
@@ -1695,9 +1713,10 @@ namespace Pwr {
 			if (graph_width > 0) out += graphs[i](pwr.history[i], data_same or redraw);
 			const auto& cur = pwr.current[i];
 			const long long pct = cur ? clamp(static_cast<long long>(*cur * 100000.0 / max(1ll, graph_scale[i])), 0ll, 100ll) : 0;
-			out += (cur ? Theme::g("cached").at(pct) : Theme::c("inactive_fg")) + rjust(watts_txt(cur), 7)
-				+ Theme::c("inactive_fg") + " max" + Theme::c("main_fg") + rjust(pwr.available[i] ? watts_txt(pwr.session_max[i]) : "—", 7)
-				+ string(max(0, cell_width - 5 - graph_width - 18), ' ');
+			out += (cur ? Theme::g("cached").at(pct) : Theme::c("inactive_fg")) + rjust((cur and pwr.unverified[i] ? "~" : "") + watts_txt(cur), 7);
+			if (show_max)
+				out += Theme::c("inactive_fg") + " max" + Theme::c("main_fg") + rjust(pwr.available[i] ? watts_txt(pwr.session_max[i]) : "—", 7);
+			out += string(max(0, cell_width - (show_max ? cell_fixed_max : cell_fixed_min) - graph_width), ' ');
 			if (col == 0) out += Theme::c("div_line") + Symbols::v_line;
 		}
 
@@ -1840,6 +1859,7 @@ namespace Proc {
 	Draw::Graph detailed_cpu_graph;
 	Draw::Graph detailed_mem_graph;
 	int user_size, thread_size, prog_size, cmd_size, tree_size;
+	int gpu_size = 0; //? topo: colonna Gpu% (opzione proc_gpu), 0 = assente
 	int dgraph_x, dgraph_width, d_width, d_x, d_y;
 	bool previous_proc_banner_state = false;
 	atomic<bool> resized (false);
@@ -2035,6 +2055,16 @@ namespace Proc {
 				cmd_size += 5;
 				tree_size += 5;
 			}
+			//? topo: colonna Gpu% (5 + spazio), presa dal comando o dal nome del programma
+			gpu_size = 0;
+		#ifdef __APPLE__
+			if (Config::getB("proc_gpu") and width >= 60) {
+				gpu_size = 5;
+				if (cmd_size > 6) cmd_size -= gpu_size + 1;
+				else prog_size -= gpu_size + 1;
+				tree_size -= gpu_size + 1;
+			}
+		#endif
 
 			//? Detailed box
 			if (show_detailed) {
@@ -2213,6 +2243,7 @@ namespace Proc {
 
 			out += (thread_size > 0 ? Mv::l(4) + "Threads: " : "")
 					+ ljust("User:", user_size) + ' '
+					+ (gpu_size > 0 ? rjust("Gpu%", gpu_size) + ' ' : "")
 					+ rjust((mem_bytes ? "MemB" : "Mem%"), 5) + ' '
 					+ rjust("Cpu%", (show_graphs ? 10 : 5)) + Fx::ub;
 		}
@@ -2386,6 +2417,7 @@ namespace Proc {
 
 			out += (thread_size > 0 ? t_color + rjust(proc_threads_string, thread_size) + ' ' + end : "" )
 				+ g_color + ljust((cmp_greater(p.user.size(), user_size) ? p.user.substr(0, user_size - 1) + '+' : p.user), user_size) + ' '
+				+ (gpu_size > 0 ? c_color + rjust(p.gpu_p < 0 ? string("") : p.gpu_p < 10 ? fmt::format("{:.1f}", p.gpu_p) : fmt::format("{:.0f}", p.gpu_p), gpu_size) + end + ' ' : "")
 				+ m_color + rjust(mem_str, 5) + end + ' '
 				+ (is_selected or is_followed ? "" : Theme::c("inactive_fg")) + (show_graphs ? graph_bg * 5: "")
 				+ (p_graphs.contains(p.pid) ? Mv::l(5) + c_color + p_graphs.at(p.pid)({(p.cpu_p >= 0.1 and p.cpu_p < 5 ? 5ll : (long long)round(p.cpu_p))}, data_same) : "") + end + ' '
@@ -2520,10 +2552,12 @@ namespace Draw {
 			using namespace Gpu;
 			total_height += 4 + gpu_b_height_offsets[shown_panels[i]];
 		}
-	#ifdef SITOP_PWR_BOX
-		//? sitop: anche il box pwr sta nella pila sotto la cpu
-		if (boxes.contains("pwr")) Gpu::total_height += Pwr::min_height;
 	#endif
+		//? topo: il box pwr sta nella pila sotto la cpu insieme ai gpu. La sua altezza si tiene a parte
+		//? (Gpu::total_height si azzera solo se c'e' un box gpu) e si somma alla pila dopo i gpu.
+		int pwr_reserved = 0;
+	#ifdef SOC_PWR_BOX
+		if (boxes.contains("pwr")) pwr_reserved = Pwr::min_height;
 	#endif
 		Mem::shown = boxes.contains("mem");
 		Net::shown = boxes.contains("net");
@@ -2542,8 +2576,8 @@ namespace Draw {
             const bool show_temp = (Config::getB("check_temp") and got_sensors);
 			width = round((double)Term::width * width_p / 100);
 		#ifdef GPU_SUPPORT
-			if (Gpu::shown != 0 and not (Mem::shown or Net::shown or Proc::shown)) {
-				height = Term::height - Gpu::total_height - gpus_extra_height;
+			if ((Gpu::shown != 0 or pwr_reserved > 0) and not (Mem::shown or Net::shown or Proc::shown)) {
+				height = Term::height - Gpu::total_height - pwr_reserved - gpus_extra_height;
 			} else {
 				height = max(8, (int)ceil((double)Term::height * (trim(boxes) == "cpu" ? 100 : height_p/(Gpu::shown+1) + (Gpu::shown != 0)*5) / 100));
 			}
@@ -2585,7 +2619,7 @@ namespace Draw {
 
 		#ifdef __APPLE__
 			if (apple_cluster_count > 0) {
-				//? sitop: core raggruppati per livello, con una riga di intestazione per livello (frequenza, temperatura).
+				//? topo: core raggruppati per livello, con una riga di intestazione per livello (frequenza, temperatura).
 				//? Le temperature per core non si disegnano (su Apple Silicon non esistono sensori per core):
 				//? celle piu' strette, cosi' tutti i core restano visibili. Un posto in piu' per livello evita
 				//? che un'intestazione resti sola in fondo a una colonna.
@@ -2621,8 +2655,16 @@ namespace Draw {
 					b_column_size = 0;
 					b_width = 8 * b_columns + 1;
 				}
-				//? la riga CPU (misuratore, temperatura, watt) ha bisogno di un minimo di spazio
-				b_width = max(b_width, min(avail, (show_temp ? 34 : 24) + (supports_watts ? 6 : 0)));
+				//? la riga CPU (misuratore, temperatura, watt) ha bisogno di un minimo di spazio: se il riquadro
+				//? va allargato si allargano tutte le celle allo stesso modo (larghezza = celle * colonne + 1,
+				//? come sopra), cosi' le colonne restano allineate e l'ultima chiude sul bordo
+				const int need = min(avail, (show_temp ? 34 : 24) + (supports_watts ? 6 : 0));
+				if (b_width < need) {
+					int cell = (int)ceil((double)(need - 1) / b_columns);
+					if (cell * b_columns + 1 > width - 2) cell = max(8, (width - 3) / b_columns);
+					b_width = cell * b_columns + 1;
+					b_column_size = cell >= 20 ? 2 : (cell >= 14 ? 1 : 0);
+				}
 				b_height = min(height - 2, (int)ceil((double)items / b_columns) + 4 + extra_rows);
 			}
 		#endif
@@ -2672,7 +2714,8 @@ namespace Draw {
 					else height = Cpu::height;
 				else
 					if (not (Mem::shown or Net::shown or Proc::shown))
-						height = (Term::height - total_height) / (Gpu::shown - i) + (i == 0) * ((Term::height - total_height) % (Gpu::shown - i));
+						//? topo: il box pwr (pwr_reserved) sta sotto i gpu e va lasciato libero
+						height = (Term::height - pwr_reserved - total_height) / (Gpu::shown - i) + (i == 0) * ((Term::height - pwr_reserved - total_height) % (Gpu::shown - i));
 					else
 						height = max(min_height, (int)ceil((double)Term::height * height_p/Gpu::shown / 100));
 
@@ -2697,8 +2740,8 @@ namespace Draw {
 		}
 	#endif
 
-	#ifdef SITOP_PWR_BOX
-		//* sitop: box pwr, fascia a tutta larghezza sotto cpu/gpu; conta nell'altezza della pila gpu
+	#ifdef SOC_PWR_BOX
+		//* topo: box pwr, fascia a tutta larghezza sotto cpu/gpu; conta nell'altezza della pila gpu
 		Pwr::box.clear();
 		Pwr::redraw = true;
 		Pwr::shown = boxes.contains("pwr");

@@ -1,4 +1,4 @@
-/* Copyright 2026 the sitop contributors
+/* Copyright 2026 the topo contributors
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
@@ -12,7 +12,7 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 
-   Modified for sitop (fork of btop for Apple Silicon), 2026: see NOTICE.
+   Modified for topo (fork of btop for Apple Silicon), 2026: see NOTICE.
    Tabella CLPC, scala DVFS, acc-clusters e calcolo delle residenze portati da
    macmon (MIT, Copyright (c) 2024 vladkens); istogrammi PMP, floor ANE e chiavi
    SMC di potenza da mactop (MIT, Copyright (c) 2024-2026 Carsen Klock).
@@ -94,6 +94,91 @@ namespace AppleSoc::Pure {
 		return std::nullopt;
 	}
 
+	bool clpc_build_verified(std::string_view os_build) {
+		return os_build == "26A428" or os_build == "26A434";
+	}
+
+	auto ClpcValidator::feed(std::optional<double> clpc_cpu, std::optional<double> clpc_gpu, std::optional<double> clpc_ane,
+		std::optional<double> em_gpu) -> ClpcCheck {
+		if (state_ == ClpcCheck::rejected) return state_;
+		//? -1 discorde, 0 non confrontabile, +1 concorde
+		int verdict = 0;
+		for (auto v : {clpc_cpu, clpc_gpu, clpc_ane})
+			if (v and (not std::isfinite(*v) or *v > max_plausible_w)) verdict = -1;
+		if (verdict == 0 and clpc_gpu and em_gpu) {
+			if (*em_gpu >= min_w) {
+				const double ratio = *clpc_gpu / *em_gpu;
+				verdict = (ratio >= ratio_lo and ratio <= ratio_hi) ? 1 : -1;
+			} else if (*clpc_gpu >= 4 * min_w and *clpc_gpu > 4 * *em_gpu) {
+				//? GPU ferma per l'Energy Model ma non per CLPC: indici sbagliati
+				verdict = -1;
+			}
+		}
+		if (verdict > 0) {
+			disagree_ = 0;
+			if (++agree_ >= verify_after) state_ = ClpcCheck::verified;
+		} else if (verdict < 0) {
+			if (++disagree_ >= reject_after) state_ = ClpcCheck::rejected;
+		}
+		return state_;
+	}
+
+	std::string clpc_check_name(ClpcCheck c) {
+		switch (c) {
+			case ClpcCheck::pending: return "pending";
+			case ClpcCheck::verified: return "verified";
+			case ClpcCheck::rejected: return "rejected";
+		}
+		return "";
+	}
+
+	auto HeldValue::feed(std::optional<double> v) -> std::optional<double> {
+		if (v) {
+			last_ = v;
+			missing_ = 0;
+			return v;
+		}
+		if (last_ and ++missing_ <= max_missing) return last_;
+		last_.reset();
+		return std::nullopt;
+	}
+
+	//? ---- GPU per processo ----
+	auto GpuTimeTracker::feed(const std::vector<GpuClient>& clients, uint64_t now_ns) -> std::map<int, double> {
+		std::map<int, double> out;
+		if (clients.empty()) return out; //? lettura fallita: si tiene la base precedente
+		std::map<uint64_t, uint64_t> cur;
+		const bool first = prev_ns_ == 0;
+		const double interval = first or now_ns <= prev_ns_ ? 0.0 : static_cast<double>(now_ns - prev_ns_);
+		std::map<int, uint64_t> delta;
+		for (const auto& c : clients) {
+			cur[c.id] = c.gpu_ns;
+			if (c.pid <= 0) continue;
+			auto& d = delta[c.pid];
+			//? client nuovo: il suo tempo accumulato puo' venire da prima dell'intervallo, fa solo da base
+			if (auto p = prev_.find(c.id); p != prev_.end()) d += c.gpu_ns > p->second ? c.gpu_ns - p->second : 0;
+		}
+		if (interval > 0)
+			for (const auto& [pid, ns] : delta)
+				out[pid] = std::clamp(100.0 * static_cast<double>(ns) / interval, 0.0, 100.0);
+		prev_ = std::move(cur);
+		prev_ns_ = now_ns;
+		return out;
+	}
+
+	auto parse_creator_pid(std::string_view creator) -> std::optional<int> {
+		if (not creator.starts_with("pid ")) return std::nullopt;
+		creator.remove_prefix(4);
+		int pid = 0;
+		size_t i = 0;
+		for (; i < creator.size() and std::isdigit(static_cast<unsigned char>(creator[i])); i++) {
+			pid = pid * 10 + (creator[i] - '0');
+			if (pid > 100'000'000) return std::nullopt;
+		}
+		if (i == 0) return std::nullopt;
+		return pid;
+	}
+
 	//? ---- energia ----
 	auto energy_to_watts(int64_t delta, std::string_view unit, double seconds) -> std::optional<double> {
 		if (delta < 0 or not (seconds > 0)) return std::nullopt;
@@ -115,6 +200,10 @@ namespace AppleSoc::Pure {
 	//? ---- temperature ----
 	bool plausible_temp(double c) {
 		return std::isfinite(c) and c > 0 and c <= 150.0;
+	}
+
+	bool plausible_die_temp(double c) {
+		return plausible_temp(c) and c >= 20.0;
 	}
 
 	auto average_valid(std::span<const double> values) -> std::optional<double> {
@@ -381,6 +470,24 @@ namespace AppleSoc::Pure {
 	}
 
 	//? ---- SMC ----
+	auto SmcTempRing::due(std::string_view needed, size_t budget) -> std::vector<size_t> {
+		std::vector<size_t> out;
+		if (keys.empty() or budget == 0) return out;
+		const size_t n = keys.size();
+		size_t i = next % n;
+		for (size_t visited = 0; visited < n and out.size() < budget; visited++, i = (i + 1) % n)
+			if (needed.find(keys[i].cls) != std::string_view::npos) out.push_back(i);
+		next = i;
+		return out;
+	}
+
+	auto SmcTempRing::average(char cls) const -> std::optional<double> {
+		std::vector<double> values;
+		for (const auto& k : keys)
+			if (k.cls == cls and k.value) values.push_back(*k.value);
+		return average_valid(values);
+	}
+
 	auto decode_smc(std::string_view type, std::span<const uint8_t> b) -> std::optional<double> {
 		double v = 0;
 		if (type == "flt " and b.size() >= 4) {

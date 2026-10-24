@@ -12,7 +12,7 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 
-   Modified for sitop (fork of btop for Apple Silicon), 2026: see NOTICE.
+   Modified for topo (fork of btop for Apple Silicon), 2026: see NOTICE.
 
 indent = tab
 tab-size = 4
@@ -285,7 +285,7 @@ namespace Theme {
 					rgbs[name] = hex_to_dec(color);
 				}
 			}
-			//? sitop: pwr_box e' facoltativo nei temi; senza, usa il colore di cpu_box
+			//? topo: pwr_box e' facoltativo nei temi; senza, usa il colore di cpu_box
 			if (source.contains("pwr_box") and source.at("pwr_box").starts_with('#')) {
 				colors["pwr_box"] = hex_to_color(source.at("pwr_box"), t_to_256, "fg");
 				rgbs["pwr_box"] = hex_to_dec(source.at("pwr_box"));
@@ -442,7 +442,7 @@ namespace Theme {
 		themes.push_back("TTY");
 
 		//? Priority: custom_theme_dir -> user_theme_dir -> theme_dirs (in order)
-		//? sitop: a theme file name found in more than one directory is listed once, from the first directory
+		//? topo: a theme file name found in more than one directory is listed once, from the first directory
 		vector<fs::path> search_dirs { custom_theme_dir, user_theme_dir };
 		search_dirs.insert(search_dirs.end(), theme_dirs.begin(), theme_dirs.end());
 		for (const auto& path : search_dirs) {

@@ -12,7 +12,7 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 
-   Modified for sitop (fork of btop for Apple Silicon), 2026: see NOTICE.
+   Modified for topo (fork of btop for Apple Silicon), 2026: see NOTICE.
 
 indent = tab
 tab-size = 4
@@ -145,8 +145,8 @@ namespace Term {
 		for (int i = 0; i < gpu; i++)
 			height += Gpu::gpu_b_height_offsets[i] + 4;
 	#endif
-	#ifdef SITOP_PWR_BOX
-		//? sitop: il box pwr occupa una fascia a tutta larghezza di altezza fissa
+	#ifdef SOC_PWR_BOX
+		//? topo: il box pwr occupa una fascia a tutta larghezza di altezza fissa
 		if (boxes.contains("pwr")) {
 			height += Pwr::min_height;
 			if (width < Pwr::min_width) width = Pwr::min_width;

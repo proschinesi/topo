@@ -1,4 +1,4 @@
-/* Copyright 2026 the sitop contributors
+/* Copyright 2026 the topo contributors
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
@@ -12,7 +12,7 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 
-   Modified for sitop (fork of btop for Apple Silicon), 2026: see NOTICE.
+   Modified for topo (fork of btop for Apple Silicon), 2026: see NOTICE.
 
 indent = tab
 tab-size = 4
@@ -22,7 +22,7 @@ tab-size = 4
 
 #import <Foundation/Foundation.h>
 
-extern "C" int sitop_thermal_state(void) {
+extern "C" int soc_thermal_state(void) {
 	@autoreleasepool {
 		return static_cast<int>([[NSProcessInfo processInfo] thermalState]);
 	}

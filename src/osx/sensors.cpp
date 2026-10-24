@@ -12,7 +12,7 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 
-   Modified for sitop (fork of btop for Apple Silicon), 2026: see NOTICE.
+   Modified for topo (fork of btop for Apple Silicon), 2026: see NOTICE.
 
 indent = tab
 tab-size = 4
@@ -182,7 +182,7 @@ long long Cpu::ThermalSensors::getSensors(std::vector<long long>& core_temps) {
 	return avg_to_long(temps);
 }
 
-//? ---- sitop: HidThermal ----
+//? ---- topo: HidThermal ----
 namespace {
 	uint64_t now_ns() {
 		static mach_timebase_info_data_t tb = {0, 0};

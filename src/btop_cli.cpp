@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Modified for sitop (fork of btop for Apple Silicon), 2026: see NOTICE.
+// Modified for topo (fork of btop for Apple Silicon), 2026: see NOTICE.
 
 #include "btop_cli.hpp"
 
@@ -198,7 +198,7 @@ namespace Cli {
 				continue;
 			}
 			if (arg == "--count" || arg == "--interval") {
-				// sitop: options of --dump-soc, both require a positive number
+				// topo: options of --dump-soc, both require a positive number
 				const bool is_count = arg == "--count";
 				if (++it == args.end()) {
 					error(fmt::format("{} requires an argument", arg));

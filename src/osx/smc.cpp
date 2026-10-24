@@ -12,7 +12,7 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 
-   Modified for sitop (fork of btop for Apple Silicon), 2026: see NOTICE.
+   Modified for topo (fork of btop for Apple Silicon), 2026: see NOTICE.
    Lettura delle chiavi SMC numeriche (flt e altri tipi) ed elenco delle chiavi
    come in macmon (MIT, Copyright (c) 2024 vladkens).
 
@@ -60,7 +60,7 @@ namespace Cpu {
 			throw std::runtime_error("failed to get AppleSMC");
 		}
 
-		//? sitop: su Apple Silicon le chiavi stanno nel servizio "AppleSMCKeysEndpoint"; altrimenti il primo
+		//? topo: su Apple Silicon le chiavi stanno nel servizio "AppleSMCKeysEndpoint"; altrimenti il primo
 		device = 0;
 		io_object_t candidate;
 		while ((candidate = IOIteratorNext(iterator)) != 0) {
@@ -120,7 +120,7 @@ namespace Cpu {
 			snprintf(key, 5, "TC%1cc", KeyIndexes[core]);
 		}
 		long long result = getSMCTemp(key);
-		//? sitop: con core == -1 (sensore di package) non c'e' un indice da riprovare: KeyIndexes[-1] era fuori limiti
+		//? topo: con core == -1 (sensore di package) non c'e' un indice da riprovare: KeyIndexes[-1] era fuori limiti
 		if (result == -1 and core >= 0) {
 			// try again with C
 			snprintf(key, 5, "TC%1cC", KeyIndexes[core]);

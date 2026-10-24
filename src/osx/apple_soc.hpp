@@ -1,4 +1,4 @@
-/* Copyright 2026 the sitop contributors
+/* Copyright 2026 the topo contributors
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
@@ -12,7 +12,7 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 
-   Modified for sitop (fork of btop for Apple Silicon), 2026: see NOTICE.
+   Modified for topo (fork of btop for Apple Silicon), 2026: see NOTICE.
    Parti portate da macmon (MIT, Copyright (c) 2024 vladkens) e
    mactop (MIT, Copyright (c) 2024-2026 Carsen Klock): vedi NOTICE.
 
@@ -67,6 +67,9 @@ namespace AppleSoc {
 		std::optional<double> ane_power_w;
 		std::optional<double> dram_power_w;
 		std::optional<double> system_power_w;
+		//? valori CLPC mostrati prima che il controllo incrociato li abbia verificati (UI: "~")
+		bool cpu_power_unverified = false;
+		bool ane_power_unverified = false;
 
 		//? stima: residenza delle richieste di "floor" di prestazione dell'ANE (PMP), non uso misurato
 		std::optional<double> ane_usage_estimate_pct;
@@ -75,15 +78,27 @@ namespace AppleSoc {
 		std::optional<double> dram_bw_estimate_gbs;  //? stima dagli istogrammi PMP DCS BW
 
 		std::optional<std::string> thermal_state;    //? NSProcessInfo.thermalState
+		std::string clpc_check;                      //? controllo incrociato CLPC: "pending", "verified", "rejected" o vuoto
+		std::optional<double> clpc_gpu_w;            //? GPU da CLPC (diagnostica: confronto con gpu_power_w dell'Energy Model)
 
 		std::map<std::string, std::string> sources;  //? da dove arriva ogni grandezza (diagnostica)
 	};
+
+	//* Cosa serve campionare oltre al minimo (deciso dalle opzioni dell'interfaccia).
+	//* Gli istogrammi PMP (stima banda DRAM, stima d'uso ANE) hanno una sottoscrizione IOReport a parte,
+	//* campionata solo se qualcuno li mostra: costano circa 0,5 ms di CPU per campione.
+	struct Wants {
+		bool ane_estimate = true;     //? stima d'uso ANE (floor PMP)
+		bool dram_bw_estimate = true; //? stima banda DRAM (PMP), usata solo se manca il dato diretto AMC
+	};
+	void set_wants(const Wants& w);
 
 	//* Inizializza le sorgenti (idempotente). Ritorna false se non e' un Mac Apple Silicon.
 	bool init();
 	bool available();
 	void shutdown();
-	//* La potenza CPU e' leggibile (canali CLPC su macOS 27, Energy Model prima)
+	//* La potenza CPU e' arrivata davvero almeno una volta (canali CLPC su macOS 27, Energy Model prima).
+	//* Prima del primo valore reale resta false: l'interfaccia non riserva spazio a un "0.00W" finto.
 	bool has_cpu_power();
 
 	//* Nuovo campione se l'ultimo e' piu' vecchio di max_age_ms, altrimenti quello in cache.
@@ -92,6 +107,15 @@ namespace AppleSoc {
 
 	//* Ultimo campione senza campionare (vuoto prima del primo collect).
 	const Sample& last();
+
+	//* Client Metal della GPU (AGXDeviceUserClient nell'IORegistry, leggibili senza sudo):
+	//* (id del client, pid del creatore, tempo GPU accumulato in ns). Costo: ~100 client, 2 proprieta' ciascuno.
+	struct GpuClient {
+		uint64_t id = 0;
+		int pid = -1;
+		uint64_t gpu_ns = 0;
+	};
+	auto gpu_clients() -> std::vector<GpuClient>;
 
 	//* Sample in JSON su una riga, null per i valori assenti.
 	std::string to_json(const Sample& s);
@@ -109,6 +133,55 @@ namespace AppleSoc {
 		//? nullopt se macOS non e' 27.x o il driver non e' in tabella
 		auto clpc_energy_channels(std::string_view bundle, std::string_view os_version) -> std::optional<std::array<ClpcChannel, 3>>;
 		auto os_major(std::string_view os_version) -> std::optional<int>;
+		//? build di macOS su cui la tabella CLPC e' stata verificata a mano (27.0 26A428, 27.0.1 26A434)
+		bool clpc_build_verified(std::string_view os_build);
+
+		//? Controllo incrociato dei canali CLPC (costruiti a mano da una tabella per build): il contatore
+		//? GPU di CLPC deve concordare con "GPU Energy" dell'Energy Model, che su macOS 27 funziona ancora.
+		//? Un campione e' confrontabile se la GPU consuma almeno min_w; dopo reject_after campioni
+		//? discordanti di fila i canali CLPC vengono scartati (definitivo per la sessione).
+		enum class ClpcCheck { pending, verified, rejected };
+		class ClpcValidator {
+		public:
+			static constexpr double min_w = 0.2;          //? sotto questa potenza GPU il rapporto non e' affidabile
+			static constexpr double ratio_lo = 0.8, ratio_hi = 1.25; //? misurato su M2 Max sotto carico: 0,98
+			static constexpr double max_plausible_w = 500.0;
+			static constexpr int verify_after = 3, reject_after = 5;
+			auto feed(std::optional<double> clpc_cpu, std::optional<double> clpc_gpu, std::optional<double> clpc_ane,
+				std::optional<double> em_gpu) -> ClpcCheck;
+			auto state() const -> ClpcCheck { return state_; }
+		private:
+			ClpcCheck state_ = ClpcCheck::pending;
+			int agree_ = 0, disagree_ = 0;
+		};
+		std::string clpc_check_name(ClpcCheck c);
+
+		//? Ultimo valore valido tenuto per al massimo max_missing campioni senza dato, poi assente:
+		//? un campione invalido isolato non fa sparire e riapparire un valore nell'interfaccia.
+		class HeldValue {
+		public:
+			static constexpr int max_missing = 2;
+			auto feed(std::optional<double> v) -> std::optional<double>;
+			bool fresh() const { return missing_ == 0; } //? l'ultimo feed aveva un dato
+		private:
+			std::optional<double> last_;
+			int missing_ = 0;
+		};
+
+		//? ---- GPU per processo ----
+		//? Uso GPU per pid a delta tra due letture dei client: somma su tutti i client del pid di
+		//? (tempo attuale - tempo precedente) / intervallo. Un contatore che cala vale 0. Prima lettura: nessun valore.
+		class GpuTimeTracker {
+		public:
+			//? un client mai visto fa solo da base (uso 0 nel suo primo intervallo); una lettura vuota
+			//? (fallita) non tocca lo stato e non da' valori
+			auto feed(const std::vector<GpuClient>& clients, uint64_t now_ns) -> std::map<int, double>;
+		private:
+			std::map<uint64_t, uint64_t> prev_; //? id client -> ns
+			uint64_t prev_ns_ = 0;
+		};
+		//? "pid 402, WindowServer" -> 402
+		auto parse_creator_pid(std::string_view creator) -> std::optional<int>;
 
 		//? ---- energia -> potenza ----
 		//? delta di energia nell'unita' indicata (mJ, uJ/µJ, nJ) su seconds secondi -> watt.
@@ -119,6 +192,9 @@ namespace AppleSoc {
 
 		//? ---- filtro sensori di temperatura ----
 		bool plausible_temp(double c); //? 0 < c <= 150
+		//? chiavi SMC di die (Tp/Te/Ts/Tg): sotto 20 °C sono blocchi spenti dal power gating che riportano
+		//? valori non assoluti (M2 Max: 4-8 °C su Tp* dei core P fermi), non temperature
+		bool plausible_die_temp(double c); //? 20 <= c <= 150
 		auto average_valid(std::span<const double> values) -> std::optional<double>;
 		//? scarta i salti impossibili tra campioni consecutivi; dopo 3 scarti di fila accetta il nuovo livello
 		class TempFilter {
@@ -187,6 +263,17 @@ namespace AppleSoc {
 		auto floor_active_pct(const States& states) -> std::optional<double>;
 
 		//? ---- SMC ----
+		//? Lettura a rotazione delle chiavi di temperatura: ogni chiave tiene l'ultimo valore letto,
+		//? a ogni campione se ne rileggono al massimo budget (le classi coperte dall'HID si saltano).
+		//? La media di una classe usa tutti i valori noti, anche di qualche campione prima.
+		struct SmcTempRing {
+			struct Key { std::string key; char cls = 0; std::optional<double> value; };
+			std::vector<Key> keys;
+			size_t next = 0;
+			//? indici delle chiavi da rileggere ora (classi in needed), in ordine di rotazione
+			auto due(std::string_view needed, size_t budget) -> std::vector<size_t>;
+			auto average(char cls) const -> std::optional<double>;
+		};
 		//? decodifica un valore SMC per tipo ("flt ", "sp78", "fpe2", "ui8 ", "ui16", "ui32")
 		auto decode_smc(std::string_view type, std::span<const uint8_t> bytes) -> std::optional<double>;
 

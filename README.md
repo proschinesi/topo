@@ -1,7 +1,158 @@
-> **sitop** e' un fork di [btop++](https://github.com/aristocratos/btop) (Apache-2.0, (c) Jakob P. Liljenberg / aristocratos)
-> orientato ai Mac Apple Silicon: stessa interfaccia, piu' metriche del SoC (cluster CPU, GPU, ANE, potenze) senza sudo.
-> Il build supportato e' CMake (`cmake -B build && cmake --build build`, eseguibile `build/sitop`); config in
-> `~/.config/sitop/sitop.conf`, temi letti anche dalle cartelle di btop. Vedi `NOTICE`. Il resto di questo README e' quello di btop.
+# topo
+
+**topo** e' un monitor di sistema da terminale per i Mac Apple Silicon. E' un fork di
+[btop++](https://github.com/aristocratos/btop) (Apache-2.0, (c) Jakob P. Liljenberg / aristocratos): ha la stessa
+interfaccia, gli stessi temi e grafici braille, la stessa gestione di processi, rete e dischi. In piu' legge i dati
+del SoC che btop su macOS non mostra, **senza sudo**.
+
+![topo su M2 Max, 120x40](docs/topo-m2max-120x40.svg)
+
+![topo su M5 Pro, 120x40](docs/topo-m5pro-120x40.svg)
+
+## Cosa aggiunge a btop
+
+- **Box cpu per cluster**: i core sono raggruppati per livello (E, P, S), con frequenza media e temperatura del livello
+  nell'intestazione (`P 3.2GHz 45°C`). La topologia viene da `hw.perflevelN`, senza tabelle per chip.
+- **Box gpu**: uso (residenza attiva), frequenza attuale/massima, potenza, temperatura vera; riga **ANE** con potenza
+  e stima d'uso; grafico grande diviso in GPU (sopra) e ANE (sotto); memoria indicata come `unified`.
+- **Box pwr** (tasto `6`): potenza di CPU, GPU, ANE, DRAM, sistema e totale del SoC, con massimo di sessione e stato
+  termico di macOS.
+- **Box mem**: banda DRAM (`DRAM BW x GB/s`), oppure la stima `~x GB/s (stima)` dove il dato diretto manca.
+- **Box proc**: colonna opzionale `Gpu%` per processo.
+- `--dump-soc`: un campione del SoC in JSON per riga, con la fonte di ogni valore.
+
+Dove un dato manca si vede `—`, mai uno 0 finto.
+
+## Macchine provate
+
+| Mac | Chip | macOS | Note |
+|---|---|---|---|
+| MacBook Pro | M2 Max (4 E + 8 P) | 27.0.1 (26A434) | banda DRAM diretta (AMC), temperature cluster da SMC |
+| Mac mini | M5 Pro (12 P + 6 S) | 27.0.1 (26A434) | banda DRAM solo stimata, temperature da SMC |
+
+Su altri chip (M1-M4, Ultra) il codice non usa tabelle per modello, salvo la tabella dei canali CLPC per driver; non e'
+stato provato.
+
+## Metriche e fonti
+
+| Metrica | Fonte | Note |
+|---|---|---|
+| Uso per core | `host_processor_info` | come btop |
+| Frequenza per cluster | IOReport `CPU Stats / CPU Core Performance States` + tabelle DVFS del nodo `pmgr` | media pesata sulla residenza attiva |
+| Temperatura per cluster | HID (`pACC/eACC/sACC`) o SMC `Tp*/Te*/Ts*` | media delle chiavi plausibili, lette a rotazione (16 per campione) |
+| Temperatura CPU (riga CPU) | livello piu' caldo | |
+| Uso e frequenza GPU | IOReport `GPU Stats / GPUPH` | |
+| Potenza GPU | IOReport `Energy Model / GPU Energy` | CLPC come ripiego |
+| Potenza CPU e ANE | IOReport CLPC `Energy Counters` (macOS 27), `Energy Model` prima | vedi sotto |
+| Temperatura GPU | HID (`GPU MTR`, `PMU TP*g`) o SMC `Tg*` | |
+| Potenza DRAM | SMC `PZD*` | |
+| Potenza di sistema | SMC `PSTR` (poi `PDTR`, `PD0R`) | |
+| Banda DRAM | IOReport `AMC Stats / DCS RD+WR` | dove il kernel la espone |
+| Banda DRAM stimata | istogrammi PMP `DCS BW` | **stima**, con `~` e `(stima)` |
+| Uso ANE `~x%` | richieste di "floor" PMP dell'ANE | **stima**, non uso misurato |
+| Stato termico | `NSProcessInfo.thermalState` | nominal, fair, serious, critical |
+| GPU per processo | IORegistry `AGXDeviceUserClient`, `accumulatedGPUTime` | a delta, opzione `proc_gpu` |
+| Totale SoC | CPU + GPU + ANE + DRAM | somma, non una misura |
+
+**macOS 27 e CLPC.** Su macOS 27 Apple ha bloccato i contatori CPU/ANE/DRAM dell'Energy Model (restano a 0). topo
+li ricostruisce dai canali del driver AppleCLPC, costruiti a mano da una tabella per driver e build (portata da
+macmon), verificata su 27.0 (26A428) e 27.0.1 (26A434). Su ogni macchina il contatore GPU di CLPC viene confrontato
+con `GPU Energy` dell'Energy Model, che funziona ancora: se per 5 campioni di fila con la GPU attiva il rapporto esce
+da 0,8-1,25, i canali CLPC vengono scartati e la potenza CPU/ANE resta `—`. Su M2 Max sotto carico il rapporto e'
+0,98. Finche' il controllo non e' concluso (GPU mai abbastanza attiva) i valori CLPC si vedono con `~` davanti
+(`~2.1W`); se i canali vengono scartati la potenza CPU/ANE diventa `—`. Un dato che manca per uno o due cicli tiene
+l'ultimo valore, poi `—`. Lo stato del controllo e' in `--dump-soc` (`clpc_check`: `pending`, `verified`, `rejected`).
+
+### Cosa non si ottiene senza sudo, cosa e' stima
+
+- Temperature per core: Apple Silicon non ha sensori per core, solo per cluster (le colonne per core di btop non ci sono).
+- Uso reale dell'ANE: non esiste un contatore leggibile; si mostra la potenza (CLPC) e la stima `~x%` dai floor PMP.
+- Banda DRAM: diretta solo dove il kernel espone i contatori AMC (presenti su M2 Max, assenti su M5 Pro); altrove e' una stima.
+- Potenza ed energia per processo: richiedono `powermetrics`/sudo, non ci sono.
+- Totale SoC: e' la somma delle parti; la potenza di sistema (SMC) include anche schermo, SSD, rete, perdite.
+
+## Compilazione e installazione
+
+Serve solo la toolchain di Xcode (Apple clang con C++23) e CMake:
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+ctest --test-dir build          # test delle parti pure (GoogleTest)
+./build/topo
+```
+
+Installazione nella home, senza sudo:
+
+```bash
+cmake --install build --prefix ~/.local
+```
+
+Installa `~/.local/bin/topo`, i temi in `~/.local/share/topo/themes` (trovati dal binario installato) e la pagina
+man se al build era presente `lowdown`. `~/.local/bin` deve essere nel `PATH`.
+
+Configurazione: `~/.config/topo/topo.conf`. I temi si leggono da `~/.config/topo/themes`, dalle cartelle di btop
+(`~/.config/btop/themes`, `share/btop/themes`) e da `share/topo/themes`.
+
+## Uso
+
+| Tasto | Box |
+|---|---|
+| `1` `2` `3` `4` | cpu, mem, net, proc (come btop) |
+| `5` | gpu |
+| `6` | pwr (potenze del SoC) |
+
+```bash
+topo --dump-soc                          # un campione JSON
+topo --dump-soc --count 5 --interval 500 # cinque campioni a 500 ms
+```
+
+### Opzioni nuove (menu opzioni o `topo.conf`)
+
+| Opzione | Default | Sezione menu | Effetto |
+|---|---|---|---|
+| `show_ane` | `true` | gpu | riga ANE e grafico GPU/ANE diviso nel box gpu |
+| `pwr_graphs` | `true` | gpu | grafici a una riga nel box pwr; `false` = solo numeri |
+| `dram_bw_estimate` | `true` | mem | mostra la stima PMP della banda DRAM quando manca il dato diretto |
+| `proc_gpu` | `false` | proc | colonna `Gpu%` nel box proc (circa 2 ms di CPU per aggiornamento); un client GPU appena comparso conta dal ciclo dopo |
+
+Gli istogrammi PMP (stime) si campionano solo se qualcosa li mostra.
+
+## Costo
+
+Misurato su M2 Max (macOS 27.0.1) col tempo CPU del processo (utente + sistema) in 60 s, avvio compreso,
+finestra 120x40, quattro misure in parallelo; le differenze tra due prove arrivano a 0,2 punti.
+
+| Box | Aggiornamento | % di un core |
+|---|---|---|
+| `cpu mem net proc` (default) | 2000 ms | 0,84 |
+| `cpu mem net proc gpu0 pwr` | 1000 ms | 1,39 |
+| idem con `proc_gpu = true` | 1000 ms | 1,37 |
+| `cpu mem net gpu0 pwr` | 1000 ms | 1,06 |
+| `cpu` | 1000 ms | 0,80 |
+| `mem net proc` (nessun dato SoC) | 1000 ms | 1,34 |
+
+L'ultima riga e' la parte di btop (processi, memoria, dischi, rete, disegno), che con tutti i box a 1000 ms pesa da
+sola piu' dell'1%.
+
+L'avvio costa circa 0,17 s di CPU, quasi tutto `IOReportCopyAllChannels` (~80 ms, inevitabile: la sottoscrizione
+richiede l'elenco dei canali). Un campione SoC costa 4-6 ms di CPU, quasi tutto `IOReportCreateSamples`.
+
+## Crediti
+
+- [btop++](https://github.com/aristocratos/btop) di Jakob P. Liljenberg (aristocratos) e contributori, Apache-2.0:
+  tutta l'interfaccia e la raccolta di processi, memoria, rete e dischi.
+- [macmon](https://github.com/vladkens/macmon) (MIT, vladkens): tabella dei canali CLPC per macOS 27, tabelle DVFS,
+  calcolo delle residenze, lettura delle chiavi SMC.
+- [mactop](https://github.com/metaspartan/mactop) (MIT, Carsen Klock): chiavi SMC di potenza, istogrammi PMP, floor
+  ANE, tempo GPU per processo dai client AGX.
+
+Dettagli in [`NOTICE`](NOTICE). Gli SVG in `docs/` sono generati da catture del terminale con
+`python3 -I tools/ansi2svg.py`.
+
+---
+
+*Da qui in giu' il README originale di btop.*
 
 # ![btop++](Img/logo.png)
 

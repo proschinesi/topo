@@ -12,7 +12,7 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 
-   Modified for sitop (fork of btop for Apple Silicon), 2026: see NOTICE.
+   Modified for topo (fork of btop for Apple Silicon), 2026: see NOTICE.
 
 indent = tab
 tab-size = 4
@@ -98,9 +98,9 @@ namespace Global {
 		{"#000000", "╚═════╝    ╚═╝    ╚═════╝ ╚═╝"},
 	};
 	const string Version = "1.4.7";
-	const string Name = SITOP_NAME;
-	const string SitopVersion = SITOP_VERSION;
-	const string FullVersion = Name + " " + SitopVersion + " (btop " + Version + ")";
+	const string Name = APP_NAME;
+	const string AppVersion = APP_VERSION;
+	const string FullVersion = Name + " " + AppVersion + " (btop " + Version + ")";
 
 	int coreCount;
 	string overlay;
@@ -147,7 +147,10 @@ void term_resize(bool force) {
 		if (force and refreshed) force = false;
 	}
 	else return;
-#ifdef GPU_SUPPORT
+#ifdef SOC_PWR_BOX
+	//? topo: stessa mappa di Input (btop_input.cpp): una sola GPU, il tasto 6 apre il box pwr
+	static const array<string, 10> all_boxes = {"", "cpu", "mem", "net", "proc", "gpu0", "pwr", "", "", ""};
+#elif defined(GPU_SUPPORT)
 	static const array<string, 10> all_boxes = {"gpu5", "cpu", "mem", "net", "proc", "gpu0", "gpu1", "gpu2", "gpu3", "gpu4"};
 #else
 	static const array<string, 5> all_boxes = {"", "cpu", "mem", "net", "proc"};
@@ -191,7 +194,9 @@ void term_resize(bool force) {
 					clean_quit(0);
 				else if (key.size() == 1 and isint(key)) {
 					auto intKey = stoi(key);
-				#ifdef GPU_SUPPORT
+				#ifdef SOC_PWR_BOX
+					if (not all_boxes.at(intKey).empty() and not (intKey == 5 and Gpu::count < 1)) {
+				#elif defined(GPU_SUPPORT)
 					if ((intKey == 0 and Gpu::count >= 5) or (intKey >= 5 and intKey - 4 <= Gpu::count)) {
 				#else
 					if (intKey > 0 and intKey < 5) {
@@ -488,6 +493,17 @@ namespace Runner {
 			//? Atomic lock used for blocking non thread-safe actions in main thread
 			auto lck = active.lock();
 
+		#ifdef SOC_PWR_BOX
+			//? topo: opzioni Apple cambiate dal menu (riga ANE): si applicano qui, col Config gia' aggiornato e
+			//? nessuno che legge gpus; poi ridimensionamento come per coreNum_reset
+			if (Gpu::apple_options_dirty.exchange(false)) {
+				Gpu::apply_apple_options();
+				Global::resized = true;
+				Input::interrupt();
+				continue;
+			}
+		#endif
+
 			//? Set effective user if SUID bit is set
 			gain_priv powers{};
 
@@ -514,7 +530,8 @@ namespace Runner {
 			try {
 #if defined(GPU_SUPPORT)
 				//? GPU data collection
-				const bool gpu_in_cpu_panel = Gpu::gpu_names.size() > 0 and (
+				//? topo: senza box cpu i dati gpu "nel pannello cpu" non servono (su Apple ogni raccolta gpu e' un campione SoC)
+				const bool gpu_in_cpu_panel = Gpu::gpu_names.size() > 0 and v_contains(conf.boxes, "cpu"s) and (
 					Config::getS("cpu_graph_lower").starts_with("gpu-")
 					or (Config::getS("cpu_graph_lower") == "Auto")
 					or Config::getS("cpu_graph_upper").starts_with("gpu-")
@@ -589,8 +606,8 @@ namespace Runner {
 					}
 				}
 			#endif
-			#ifdef SITOP_PWR_BOX
-				//? sitop: PWR (potenze del SoC)
+			#ifdef SOC_PWR_BOX
+				//? topo: PWR (potenze del SoC)
 				if (v_contains(conf.boxes, "pwr")) {
 					try {
 						if (Global::debug) debug_timer("pwr", collect_begin);
@@ -878,7 +895,7 @@ static auto configure_tty_mode(std::optional<bool> force_tty) {
 		}
 	}
 
-	//? sitop: --dump-soc stampa i campioni del SoC in JSON ed esce, senza TUI
+	//? topo: --dump-soc stampa i campioni del SoC in JSON ed esce, senza TUI
 	if (cli.dump_soc) {
 	#ifdef __APPLE__
 		return AppleSoc::dump(cli.dump_count, cli.dump_interval_ms);
@@ -941,8 +958,8 @@ static auto configure_tty_mode(std::optional<bool> force_tty) {
 			Global::self_path = fs::path(buf).remove_filename();
 	}
 #endif
-	//? sitop: theme search list after --themes-dir and the user theme dir (~/.config/sitop/themes):
-	//? btop user themes, share/ relative to the binary (btop, then sitop), then common system prefixes.
+	//? topo: theme search list after --themes-dir and the user theme dir (~/.config/topo/themes):
+	//? btop user themes, share/ relative to the binary (btop, then topo), then common system prefixes.
 	{
 		vector<fs::path> candidates;
 		if (const auto xdg = std::getenv("XDG_CONFIG_HOME"); xdg != nullptr and *xdg != '\0')

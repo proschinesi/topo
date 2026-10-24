@@ -12,7 +12,7 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 
-   Modified for sitop (fork of btop for Apple Silicon), 2026: see NOTICE.
+   Modified for topo (fork of btop for Apple Silicon), 2026: see NOTICE.
 
 indent = tab
 tab-size = 4
@@ -184,7 +184,7 @@ namespace Menu {
 		{"3", "Toggle NET box."},
 		{"4", "Toggle PROC box."},
 		{"5", "Toggle GPU box."},
-	#ifdef SITOP_PWR_BOX
+	#ifdef SOC_PWR_BOX
 		{"6", "Toggle PWR box (Apple Silicon power, SoC = CPU+GPU+ANE+DRAM)."},
 		{"ANE ~x%", "Estimated ANE use (PMP floor requests), not measured."},
 	#endif
@@ -232,7 +232,7 @@ namespace Menu {
 				"Set color theme.",
 				"",
 				"Choose from all theme files in",
-				"\"~/.config/" SITOP_NAME "/themes\",",
+				"\"~/.config/" APP_NAME "/themes\",",
 				"\"~/.config/btop/themes\" and (usually)",
 				"\"/opt/homebrew/share/btop/themes\".",
 				"",
@@ -583,6 +583,26 @@ namespace Menu {
 		},
 	#ifdef GPU_SUPPORT
 		{
+		#ifdef SOC_PWR_BOX
+			{"show_ane",
+				"(Apple Silicon) Show ANE in the gpu box.",
+				"",
+				"Adds the ANE row (power from CLPC",
+				"counters, \"~x%\" = estimated use from",
+				"PMP floor requests, not measured) and",
+				"splits the big graph in GPU above,",
+				"ANE below.",
+				"",
+				"True or False."},
+			{"pwr_graphs",
+				"(Apple Silicon) Graphs in the pwr box.",
+				"",
+				"True: one-line graph per series.",
+				"False: numbers only (current and",
+				"session maximum).",
+				"",
+				"Toggle the pwr box with key 6."},
+		#endif
 			{"nvml_measure_pcie_speeds",
 				"Measure PCIe throughput on NVIDIA cards.",
 				"",
@@ -641,6 +661,17 @@ namespace Menu {
 		},
 	#endif
 		{
+		#ifdef __APPLE__
+			{"dram_bw_estimate",
+				"(Apple Silicon) Estimated DRAM bandwidth.",
+				"",
+				"When the direct DRAM counters (AMC) are",
+				"not readable, show the estimate from",
+				"the PMP bandwidth histograms as",
+				"\"DRAM BW ~x GB/s (stima)\".",
+				"",
+				"False: show nothing in that case."},
+		#endif
 			{"mem_below_net",
 				"Mem box location.",
 				"",
@@ -897,6 +928,17 @@ namespace Menu {
 				"Show cpu graph for each process.",
 				"",
 				"True or False"},
+		#ifdef __APPLE__
+			{"proc_gpu",
+				"(Apple Silicon) Gpu% column.",
+				"",
+				"Per-process GPU time of the Metal",
+				"clients in the IORegistry, as a share",
+				"of the update interval. No sudo needed.",
+				"Costs ~2 ms of CPU per update.",
+				"",
+				"True or False."},
+		#endif
 			{"proc_filter_kernel",
 				"(Linux) Filter kernel processes from output.",
 				"",
@@ -1525,6 +1567,12 @@ static int optionsMenu(const string& key) {
 				else if (option == "base_10_sizes") {
 					recollect = true;
 				}
+			#ifdef SOC_PWR_BOX
+				else if (option == "show_ane") {
+					//? si applica nel thread runner a inizio ciclo (qui Config puo' essere bloccato e gpus in uso)
+					Gpu::apple_options_dirty = true;
+				}
+			#endif
 				else if (option == "save_config_on_exit" and not Config::getB("save_config_on_exit")) {
 					const bool old_write_new = Config::write_new;
 					Config::write_new = true;

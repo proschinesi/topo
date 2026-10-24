@@ -12,7 +12,7 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 
-   Modified for sitop (fork of btop for Apple Silicon), 2026: see NOTICE.
+   Modified for topo (fork of btop for Apple Silicon), 2026: see NOTICE.
 
 indent = tab
 tab-size = 4
@@ -53,13 +53,13 @@ using std::vector;
 
 using namespace std::literals; // for operator""s
 
-//? sitop: nome e versione del fork. CMake li passa da SITOP_NAME/SITOP_VERSION;
+//? topo: nome e versione del fork. CMake li passa da APP_NAME/APP_VERSION;
 //? i default servono per il Makefile upstream, che non li definisce.
-#ifndef SITOP_NAME
-#define SITOP_NAME "sitop"
+#ifndef APP_NAME
+#define APP_NAME "topo"
 #endif
-#ifndef SITOP_VERSION
-#define SITOP_VERSION "0.1.0"
+#ifndef APP_VERSION
+#define APP_VERSION "0.1.0"
 #endif
 
 namespace Tools {
@@ -74,9 +74,9 @@ extern void clean_quit(int sig);
 namespace Global {
 	extern const vector<array<string, 2>> Banner_src;
 	extern const string Version;		// versione btop upstream di partenza
-	extern const string Name;			// SITOP_NAME
-	extern const string SitopVersion;	// SITOP_VERSION
-	extern const string FullVersion;	// "sitop 0.1.0 (btop 1.4.7)"
+	extern const string Name;			// APP_NAME
+	extern const string AppVersion;	// APP_VERSION
+	extern const string FullVersion;	// "topo 0.1.0 (btop 1.4.7)"
 	extern atomic<bool> quitting;
 	extern string exit_error_msg;
 	extern atomic<bool> thread_exception;
@@ -191,12 +191,13 @@ namespace Gpu {
 
 		gpu_info_supported supported_functions;
 
-		//? sitop (Apple Silicon): frequenza massima DVFS, temperatura presente in questo campione, ANE, memoria unificata
+		//? topo (Apple Silicon): frequenza massima DVFS, temperatura presente in questo campione, ANE, memoria unificata
 		unsigned int gpu_clock_max = 0; // MHz, 0 = ignota
 		bool temp_available = true;
 		bool unified_memory = false;
 		bool show_ane = false;
 		std::optional<double> ane_power_w;
+		bool ane_power_unverified = false; //? valore CLPC non ancora verificato ("~")
 		std::optional<double> ane_usage_estimate_pct;
 		deque<long long> ane_percent;  //? potenza ANE in % di ane_power_scale_w (storico per i grafici)
 		double ane_power_scale_w = 1.0; //? fondo scala: massimo di sessione, almeno 1 W
@@ -238,10 +239,10 @@ namespace Cpu {
 	extern vector<string> available_sensors;
 	extern tuple<int, float, long, string> current_bat;
 	extern std::optional<std::string> container_engine;
-	//? sitop: numero di livelli Apple Silicon (0 altrove): il box cpu raggruppa i core per livello
+	//? topo: numero di livelli Apple Silicon (0 altrove): il box cpu raggruppa i core per livello
 	extern int apple_cluster_count;
 
-	//? sitop: un livello di prestazione Apple Silicon (Efficiency/Performance/Super), riempito solo su macOS
+	//? topo: un livello di prestazione Apple Silicon (Efficiency/Performance/Super), riempito solo su macOS
 	struct cluster_info {
 		string name;
 		string label;
@@ -272,7 +273,8 @@ namespace Cpu {
 		array<double, 3> load_avg;
 		float usage_watts = 0;
 		std::optional<std::vector<std::int32_t>> active_cpus;
-		vector<cluster_info> clusters; //? sitop: vuoto fuori da Apple Silicon
+		vector<cluster_info> clusters; //? topo: vuoto fuori da Apple Silicon
+		int watts_state = 0; //? topo: 0 valore normale, 1 non verificato ("~"), 2 assente ("—")
 	};
 
 	//* Collect cpu stats and temperatures
@@ -334,7 +336,7 @@ namespace Mem {
 			{"swap_total", {}}, {"swap_used", {}}, {"swap_free", {}}};
 		std::unordered_map<string, disk_info> disks;
 		vector<string> disks_order;
-		//? sitop (Apple Silicon): banda DRAM da contatori AMC, oppure stima PMP
+		//? topo (Apple Silicon): banda DRAM da contatori AMC, oppure stima PMP
 		std::optional<double> dram_bw_gbs;
 		std::optional<double> dram_bw_estimate_gbs;
 	};
@@ -350,9 +352,9 @@ namespace Mem {
 
 }
 
-//? sitop: box pwr (potenze del SoC Apple Silicon), solo dove c'e' la raccolta AppleSoc
+//? topo: box pwr (potenze del SoC Apple Silicon), solo dove c'e' la raccolta AppleSoc
 #if defined(__APPLE__) && defined(GPU_SUPPORT)
-#define SITOP_PWR_BOX 1
+#define SOC_PWR_BOX 1
 namespace Pwr {
 	extern string box;
 	extern int x, y, width, height, min_width, min_height;
@@ -367,11 +369,18 @@ namespace Pwr {
 		array<std::optional<double>, series_count> current; //? W, assente = "—"
 		array<double, series_count> session_max {};      //? W
 		array<bool, series_count> available {};          //? la serie e' mai arrivata
+		array<bool, series_count> unverified {};         //? valore CLPC non ancora verificato ("~")
 		std::optional<string> thermal_state;
 	};
 
 	auto collect(bool no_update = false) -> pwr_info&;
 	string draw(const pwr_info& pwr, bool force_redraw = false, bool data_same = false);
+}
+namespace Gpu {
+	//? ricalcola show_ane e l'altezza del box gpu dalle opzioni (avvio, e runner quando apple_options_dirty)
+	void apply_apple_options();
+	//? impostato dal menu opzioni, consumato dal thread runner a inizio ciclo
+	extern atomic<bool> apple_options_dirty;
 }
 #endif
 
@@ -467,6 +476,7 @@ namespace Proc {
 		size_t tree_index{};
 		bool collapsed{};
 		bool filtered{};
+		double gpu_p = -1;      //? topo: GPU% (Apple Silicon, opzione proc_gpu); -1 = nessun client GPU
 	};
 
 	//* Container for process info box

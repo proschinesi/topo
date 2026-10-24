@@ -12,7 +12,7 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 
-   Modified for sitop (fork of btop for Apple Silicon), 2026: see NOTICE.
+   Modified for topo (fork of btop for Apple Silicon), 2026: see NOTICE.
 
 indent = tab
 tab-size = 4
@@ -159,6 +159,21 @@ namespace Mem {
 	double old_uptime;
 }
 
+//? topo: un solo campione SoC per ciclo, condiviso da cpu/gpu/mem/pwr. Prima di campionare si dice ad AppleSoc
+//? quali stime servono davvero (gli istogrammi PMP costano e si campionano solo se mostrati).
+static AppleSoc::Wants soc_wants() {
+	const auto& boxes = Config::getS("shown_boxes");
+	return {
+		.ane_estimate = boxes.contains("gpu") and Config::getB("show_ane"),
+		.dram_bw_estimate = boxes.contains("mem") and Config::getB("dram_bw_estimate"),
+	};
+}
+
+static const AppleSoc::Sample& soc_collect(uint64_t max_age_ms = 50) {
+	AppleSoc::set_wants(soc_wants());
+	return AppleSoc::collect(max_age_ms);
+}
+
 #if defined(GPU_SUPPORT)
 namespace Gpu {
 	vector<gpu_info> gpus;
@@ -177,7 +192,7 @@ namespace Gpu {
 		template <bool is_init>
 		bool collect(gpu_info* gpus_slice);
 
-		//? sitop: i dati arrivano da AppleSoc (una sola sottoscrizione IOReport condivisa con la CPU)
+		//? topo: i dati arrivano da AppleSoc (una sola sottoscrizione IOReport condivisa con la CPU)
 
 		static string get_chip_name() {
 			char buf[256];
@@ -218,7 +233,7 @@ namespace Gpu {
 			if (not initialized) return false;
 
 			//? all'avvio serve un delta vero (il campione di base non ne ha)
-			const auto& soc = AppleSoc::collect(is_init ? 0 : 50);
+			const auto& soc = soc_collect(is_init ? 0 : 50);
 
 			if constexpr (is_init) {
 				//? Device name
@@ -239,7 +254,7 @@ namespace Gpu {
 					gpus_slice[0].mem_total = memsize;
 
 				//? Supported functions
-				//? sitop: su Apple "mem utilization" era la stessa residenza della GPU: tolta (niente doppioni)
+				//? topo: su Apple "mem utilization" era la stessa residenza della GPU: tolta (niente doppioni)
 				gpus_slice[0].supported_functions = {
 					.gpu_utilization = true,
 					.mem_utilization = false,
@@ -255,7 +270,7 @@ namespace Gpu {
 					.decoder_utilization = false
 				};
 				gpus_slice[0].unified_memory = true;
-				gpus_slice[0].show_ane = true;
+				gpus_slice[0].show_ane = Config::getB("show_ane");
 				gpus_slice[0].gpu_clock_max = soc.gpu_freq_max_mhz ? static_cast<unsigned int>(*soc.gpu_freq_max_mhz) : 0;
 				gpus_slice[0].gpu_clock_speed = 0;
 				gpus_slice[0].pwr_usage = 0;
@@ -294,6 +309,7 @@ namespace Gpu {
 
 			//? ANE: potenza CLPC; uso solo come stima (floor PMP)
 			gpus_slice[0].ane_power_w = soc.ane_power_w;
+			gpus_slice[0].ane_power_unverified = soc.ane_power_unverified;
 			gpus_slice[0].ane_usage_estimate_pct = soc.ane_usage_estimate_pct;
 			//? storico ANE: potenza in % del massimo di sessione (minimo 1 W); dato assente = 0 solo nel grafico
 			if (soc.ane_power_w)
@@ -333,6 +349,22 @@ namespace Gpu {
 		template bool collect<true>(gpu_info*);
 		template bool collect<false>(gpu_info*);
 	} // namespace AppleSilicon
+
+	atomic<bool> apple_options_dirty (false);
+
+	//? topo: opzioni che cambiano l'altezza del box gpu (riga ANE); chiamata all'avvio e dal runner
+	void apply_apple_options() {
+		gpu_b_height_offsets.resize(gpus.size());
+		for (size_t i = 0; i < gpus.size(); ++i) {
+			if (gpus[i].unified_memory) gpus[i].show_ane = Config::getB("show_ane");
+			gpu_b_height_offsets[i] = gpus[i].show_ane //? topo: riga ANE
+				+ gpus[i].supported_functions.gpu_utilization
+				+ gpus[i].supported_functions.pwr_usage
+				+ (gpus[i].supported_functions.encoder_utilization or gpus[i].supported_functions.decoder_utilization)
+				+ (gpus[i].supported_functions.mem_total or gpus[i].supported_functions.mem_used)
+					* (1 + 2*(gpus[i].supported_functions.mem_total and gpus[i].supported_functions.mem_used) + 2*gpus[i].supported_functions.mem_utilization);
+		}
+	}
 
 	//? Collect data from Apple Silicon GPU
 	auto collect(bool no_update) -> vector<gpu_info>& {
@@ -445,8 +477,11 @@ namespace Shared {
 		//* Get maximum length of process arguments
 		arg_max = sysconf(_SC_ARG_MAX);
 
-		//? sitop: raccolta SoC Apple Silicon (topologia, frequenze, potenze, temperature)
+		//? topo: raccolta SoC Apple Silicon (topologia, frequenze, potenze, temperature).
+		//? Le stime richieste si fissano prima del campione di base, cosi' parte gia' la sottoscrizione giusta.
+		AppleSoc::set_wants(soc_wants());
 		if (AppleSoc::init()) {
+			//? false finche' non arriva un valore reale (vedi Cpu::collect): niente "0.00W" finto
 			Cpu::supports_watts = AppleSoc::has_cpu_power();
 			Cpu::apple_cluster_count = static_cast<int>(AppleSoc::last().clusters.size());
 		}
@@ -479,14 +514,7 @@ namespace Shared {
 
 			using namespace Gpu;
 			count = gpus.size();
-			gpu_b_height_offsets.resize(gpus.size());
-			for (size_t i = 0; i < gpu_b_height_offsets.size(); ++i)
-				gpu_b_height_offsets[i] = gpus[i].show_ane //? sitop: riga ANE
-					+ gpus[i].supported_functions.gpu_utilization
-					+ gpus[i].supported_functions.pwr_usage
-					+ (gpus[i].supported_functions.encoder_utilization or gpus[i].supported_functions.decoder_utilization)
-					+ (gpus[i].supported_functions.mem_total or gpus[i].supported_functions.mem_used)
-						* (1 + 2*(gpus[i].supported_functions.mem_total and gpus[i].supported_functions.mem_used) + 2*gpus[i].supported_functions.mem_utilization);
+			apply_apple_options();
 		}
 	#endif
 
@@ -526,9 +554,24 @@ namespace Cpu {
 		return trim_name(string(buffer));
 	}
 
+	//? topo: su Apple Silicon la temperatura CPU viene dalla raccolta SoC (HID/SMC gia' letti per i livelli).
+	//? Il percorso upstream (ThermalSensors) crea a ogni ciclo un client HID e legge tutti i sensori in un
+	//? thread nuovo: ~8 ms di CPU per ciclo, piu' di tutto il campione SoC. Qui non serve piu'.
+	bool apple_soc_temps = false;
+
 	bool get_sensors() {
 		Logger::debug("get_sensors(): show_coretemp={} check_temp={}", Config::getB("show_coretemp"), Config::getB("check_temp"));
 		got_sensors = false;
+		apple_soc_temps = false;
+		if (Config::getB("check_temp") and AppleSoc::available()) {
+			for (const auto& c : AppleSoc::last().clusters) apple_soc_temps = apple_soc_temps or c.temp_c.has_value();
+			if (apple_soc_temps) {
+				got_sensors = true;
+				cpu_temp_only = true; //? niente sensori per core: le temperature sono per livello (intestazioni)
+				macM1 = true;
+				return got_sensors;
+			}
+		}
 		if (Config::getB("show_coretemp") and Config::getB("check_temp")) {
 #if __MAC_OS_X_VERSION_MIN_REQUIRED > 101504
 			ThermalSensors sensors;
@@ -609,6 +652,20 @@ namespace Cpu {
 
 		current_cpu.temp_max = 95;  // we have no idea how to get the critical temp
 
+		//? topo: temperatura del livello piu' caldo, dallo stesso campione SoC del ciclo
+		if (apple_soc_temps) {
+			std::optional<double> hottest;
+			for (const auto& c : current_cpu.clusters)
+				if (c.temp_c) hottest = std::max(hottest.value_or(0), *c.temp_c);
+			if (hottest) {
+				current_cpu.temp.at(0).push_back(static_cast<long long>(round(*hottest)));
+				if (current_cpu.temp.at(0).size() > 20) current_cpu.temp.at(0).pop_front();
+			} else if (current_cpu.temp.at(0).empty()) {
+				current_cpu.temp.at(0).push_back(0);
+			}
+			return;
+		}
+
 		if (sensor_future.valid() and
 		    sensor_future.wait_for(std::chrono::seconds(0)) != std::future_status::timeout) {
 			last_result = sensor_future.get();
@@ -617,7 +674,7 @@ namespace Cpu {
 			}
 		}
 
-		//? sitop: una lettura non plausibile (0 °C, oltre 150 °C) non entra nel grafico, se c'e' gia' un valore da mostrare
+		//? topo: una lettura non plausibile (0 °C, oltre 150 °C) non entra nel grafico, se c'e' gia' un valore da mostrare
 		auto keep = [](const deque<long long>& d, long long t) { return (t > 0 and t <= 150) or d.empty(); };
 
 		if (last_result.valid) {
@@ -648,7 +705,7 @@ namespace Cpu {
 		sensor_future = std::async(std::launch::async, collect_sensors);
 	}
 
-	//? sitop: su Apple Silicon il sysctl non c'e'; la frequenza arriva da AppleSoc (vedi collect).
+	//? topo: su Apple Silicon il sysctl non c'e'; la frequenza arriva da AppleSoc (vedi collect).
 	//? Qui serve solo a dire se il campo esiste: valore corrente o, prima del primo campione, il massimo DVFS.
 	static string apple_cpuHz() {
 		if (not cpuHz.empty()) return cpuHz;
@@ -868,8 +925,8 @@ namespace Cpu {
 		while (cmp_greater(cpu.cpu_percent.at("total").size(), width * 2)) cpu.cpu_percent.at("total").pop_front();
 
 		if (AppleSoc::available()) {
-			//? sitop: livelli, frequenze e potenza CPU dalla raccolta SoC condivisa con la GPU
-			const auto& soc = AppleSoc::collect();
+			//? topo: livelli, frequenze e potenza CPU dalla raccolta SoC condivisa con la GPU
+			const auto& soc = soc_collect();
 			cpu.clusters.clear();
 			std::optional<double> top_freq;
 			for (const auto& c : soc.clusters) {
@@ -879,9 +936,19 @@ namespace Cpu {
 				});
 				if (c.freq_mhz) top_freq = std::max(top_freq.value_or(0), *c.freq_mhz);
 			}
-			if (soc.cpu_power_w) {
-				cpu.usage_watts = static_cast<float>(*soc.cpu_power_w);
-				supports_watts = true;
+			//? watt CPU: un campione senza dato (invalido, CLPC appena scartata) tiene l'ultimo valore per
+			//? al massimo 2 cicli, poi "—"; un valore CLPC non ancora verificato si mostra con "~"
+			static AppleSoc::Pure::HeldValue held_watts;
+			if (auto w = held_watts.feed(soc.cpu_power_w)) {
+				cpu.usage_watts = static_cast<float>(*w);
+				if (held_watts.fresh()) cpu.watts_state = soc.cpu_power_unverified ? 1 : 0;
+				//? primo valore reale a sessione avviata: il box cpu va ridimensionato (spazio per i watt)
+				if (not supports_watts) {
+					supports_watts = true;
+					Runner::coreNum_reset = true;
+				}
+			} else if (supports_watts) {
+				cpu.watts_state = 2;
 			}
 			//? frequenza del livello piu' veloce in questo intervallo; senza dato resta l'ultima
 			if (Config::getB("show_cpu_freq") and top_freq)
@@ -1033,11 +1100,12 @@ namespace Mem {
 		auto &mem = current_mem;
 		static bool snapped = (getenv("BTOP_SNAPPED") != nullptr);
 
-		//? sitop: banda DRAM dalla raccolta SoC (stesso campione di cpu/gpu/pwr del ciclo)
+		//? topo: banda DRAM dalla raccolta SoC (stesso campione di cpu/gpu/pwr del ciclo)
 		if (AppleSoc::available()) {
-			const auto& soc = AppleSoc::collect();
+			const auto& soc = soc_collect();
 			mem.dram_bw_gbs = soc.dram_bw_gbs;
-			mem.dram_bw_estimate_gbs = soc.dram_bw_estimate_gbs;
+			//? la stima PMP puo' esserci anche se campionata per altri motivi (stima ANE): conta l'opzione
+			mem.dram_bw_estimate_gbs = Config::getB("dram_bw_estimate") ? soc.dram_bw_estimate_gbs : std::nullopt;
 		}
 
 		vm_statistics64 p;
@@ -1720,6 +1788,16 @@ namespace Proc {
 					}
 				}
 
+				//? topo: GPU% per processo dai client Metal (opzione proc_gpu, spenta di default)
+				if (Config::getB("proc_gpu")) {
+					static AppleSoc::Pure::GpuTimeTracker gpu_tracker;
+					const auto usage = gpu_tracker.feed(AppleSoc::gpu_clients(), static_cast<uint64_t>(timeNow) * 1000);
+					for (auto& p : current_procs) {
+						auto it = usage.find(static_cast<int>(p.pid));
+						p.gpu_p = it != usage.end() ? it->second : -1;
+					}
+				}
+
 				//? Update the details info box for process if active
 				if (show_detailed and got_detailed) {
 					_collect_details(detailed_pid, current_procs);
@@ -1860,8 +1938,8 @@ namespace Tools {
 	}
 }  // namespace Tools
 
-#ifdef SITOP_PWR_BOX
-//? sitop: potenze del SoC per il box pwr, dallo stesso campione AppleSoc del ciclo
+#ifdef SOC_PWR_BOX
+//? topo: potenze del SoC per il box pwr, dallo stesso campione AppleSoc del ciclo
 namespace Pwr {
 	pwr_info current_pwr;
 
@@ -1869,17 +1947,25 @@ namespace Pwr {
 		auto& pwr = current_pwr;
 		if (Runner::stopping or (no_update and not pwr.history[0].empty())) return pwr;
 		if (not AppleSoc::available()) return pwr;
-		const auto& soc = AppleSoc::collect();
+		const auto& soc = soc_collect();
 
 		std::optional<double> total;
 		for (auto v : {soc.cpu_power_w, soc.gpu_power_w, soc.ane_power_w, soc.dram_power_w})
 			if (v) total = total.value_or(0) + *v;
-		const array<std::optional<double>, series_count> values {
+		array<std::optional<double>, series_count> values {
 			soc.cpu_power_w, soc.gpu_power_w, soc.ane_power_w, soc.dram_power_w, soc.system_power_w, total
+		};
+		const array<bool, series_count> unverified {
+			soc.cpu_power_unverified, false, soc.ane_power_unverified, false, false, soc.cpu_power_unverified or soc.ane_power_unverified
 		};
 		//? il primo campione (senza delta) non entra nello storico
 		if (not soc.valid and pwr.history[0].empty()) return pwr;
+		static array<AppleSoc::Pure::HeldValue, series_count> held;
 		for (size_t i = 0; i < series_count; i++) {
+			//? un dato che manca per un ciclo o due tiene l'ultimo valore, poi "—"
+			values[i] = held[i].feed(values[i]);
+			if (held[i].fresh()) pwr.unverified[i] = unverified[i];
+			else if (not values[i]) pwr.unverified[i] = false;
 			pwr.current[i] = values[i];
 			if (values[i]) {
 				pwr.available[i] = true;

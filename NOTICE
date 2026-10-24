@@ -1,16 +1,17 @@
-sitop
-Copyright 2026 the sitop contributors
+topo
+Copyright 2026 the topo contributors
 
-sitop is a fork of btop++ (https://github.com/aristocratos/btop),
+topo is a fork of btop++ (https://github.com/aristocratos/btop),
 Copyright 2021-2026 Jakob P. Liljenberg (aristocratos) and the btop contributors,
 licensed under the Apache License, Version 2.0 (see LICENSE).
 
 The fork starts from btop upstream commit 89fcdf4094e89f8ac215ee6c3ee74aeffb618e86
-(v1.4.7-113-g89fcdf4). Files modified for sitop carry a notice in their header.
+(v1.4.7-113-g89fcdf4). Files modified for topo carry a notice in their header.
 
 Parts of src/osx/apple_soc*.{hpp,cpp}, src/osx/smc.cpp and tests/apple_soc.cpp are ported
 or adapted from the following projects (CLPC energy report table, DVFS tables and residency
-math, SMC key reading; SMC system/DRAM power keys, PMP bandwidth histograms, ANE floor channels):
+math, SMC key reading; SMC system/DRAM power keys, PMP bandwidth histograms, ANE floor channels,
+per-process GPU time from the AGXDeviceUserClient entries of the IORegistry):
 
   - macmon (https://github.com/vladkens/macmon), MIT License,
     Copyright (c) 2024 vladkens

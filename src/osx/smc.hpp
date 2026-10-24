@@ -12,7 +12,7 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 
-   Modified for sitop (fork of btop for Apple Silicon), 2026: see NOTICE.
+   Modified for topo (fork of btop for Apple Silicon), 2026: see NOTICE.
 
 indent = tab
 tab-size = 4
@@ -110,11 +110,11 @@ namespace Cpu {
 
 		long long getTemp(int core);
 
-		//? sitop: valore numerico decodificato (flt, sp78, fpe2, ui8/16/32), nullopt se assente
+		//? topo: valore numerico decodificato (flt, sp78, fpe2, ui8/16/32), nullopt se assente
 		std::optional<double> readValue(const std::string& key);
-		//? sitop: tipo della chiave ("flt ", "sp78"...), nullopt se la chiave non esiste
+		//? topo: tipo della chiave ("flt ", "sp78"...), nullopt se la chiave non esiste
 		std::optional<std::string> keyType(const std::string& key);
-		//? sitop: elenco di tutte le chiavi esposte (lento: da usare una volta all'avvio)
+		//? topo: elenco di tutte le chiavi esposte (lento: da usare una volta all'avvio)
 		std::vector<std::string> listKeys();
 
 	   private:

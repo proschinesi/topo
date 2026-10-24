@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Modified for sitop (fork of btop for Apple Silicon), 2026: see NOTICE.
+// Modified for topo (fork of btop for Apple Silicon), 2026: see NOTICE.
 
 #include "btop_log.hpp"
 

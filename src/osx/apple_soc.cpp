@@ -1,4 +1,4 @@
-/* Copyright 2026 the sitop contributors
+/* Copyright 2026 the topo contributors
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
@@ -12,7 +12,7 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 
-   Modified for sitop (fork of btop for Apple Silicon), 2026: see NOTICE.
+   Modified for topo (fork of btop for Apple Silicon), 2026: see NOTICE.
    Sottoscrizione IOReport unica, canali CLPC costruiti a mano e tabelle DVFS come in
    macmon (MIT, Copyright (c) 2024 vladkens); potenza di sistema/DRAM da SMC, banda PMP
    e floor ANE come in mactop (MIT, Copyright (c) 2024-2026 Carsen Klock).
@@ -69,7 +69,7 @@ extern "C" {
 	CFStringRef IOReportStateGetNameForIndex(CFDictionaryRef item, int32_t idx);
 	int64_t IOReportStateGetResidency(CFDictionaryRef item, int32_t idx);
 
-	int sitop_thermal_state(void);
+	int soc_thermal_state(void);
 }
 
 namespace AppleSoc {
@@ -141,11 +141,53 @@ namespace AppleSoc {
 			return out;
 		}
 
+		struct Subscription {
+			IOReportSubscriptionRef sub = nullptr;
+			CFMutableDictionaryRef chan = nullptr;       //? richiesta
+			CFMutableDictionaryRef subscribed = nullptr; //? canali effettivi della sottoscrizione
+			CFDictionaryRef prev = nullptr;
+			uint64_t prev_ns = 0; //? istante di prev: avanza solo insieme a prev
+
+			//? delta dall'ultimo campione (nullptr al primo o se il campionamento fallisce, e allora prev
+			//? e prev_ns restano quelli di prima); dt_s = durata reale del delta. Il chiamante rilascia il risultato.
+			CFDictionaryRef delta(uint64_t now_ns, double& dt_s) {
+				dt_s = 0;
+				if (not sub) return nullptr;
+				CFDictionaryRef cur = IOReportCreateSamples(sub, subscribed ? subscribed : chan, nullptr);
+				if (not cur) return nullptr;
+				CFDictionaryRef d = nullptr;
+				if (prev) {
+					d = IOReportCreateSamplesDelta(prev, cur, nullptr);
+					dt_s = now_ns > prev_ns ? static_cast<double>(now_ns - prev_ns) / 1e9 : 0.0;
+					CFRelease(prev);
+				}
+				prev = cur;
+				prev_ns = now_ns;
+				return d;
+			}
+			//? solo il campione di base (cambio di sottoscrizione): il delta parte da qui
+			void baseline(uint64_t now_ns) {
+				double unused;
+				if (auto d = delta(now_ns, unused)) CFRelease(d);
+			}
+			void forget() {
+				if (prev) { CFRelease(prev); prev = nullptr; }
+				prev_ns = 0;
+			}
+			void release() {
+				forget();
+				if (subscribed) { CFRelease(subscribed); subscribed = nullptr; }
+				if (chan) { CFRelease(chan); chan = nullptr; }
+				if (sub) { CFRelease((CFTypeRef)sub); sub = nullptr; }
+			}
+		};
+
 		struct State {
 			bool tried = false;
 			bool ok = false;
-			std::string chip, os_version;
+			std::string chip, os_version, os_build;
 			std::optional<int> os;
+			Wants wants;
 
 			std::vector<Tier> tiers;
 			std::vector<std::vector<uint32_t>> tier_freqs;
@@ -154,15 +196,20 @@ namespace AppleSoc {
 
 			std::string clpc_bundle;
 			bool clpc_channels = false;
+			bool clpc_build_ok = false;
+			ClpcValidator clpc_validator;
+			bool cpu_power_seen = false;
 
-			IOReportSubscriptionRef sub = nullptr;
-			CFMutableDictionaryRef chan = nullptr;       //? richiesta
-			CFMutableDictionaryRef subscribed = nullptr; //? canali effettivi della sottoscrizione
-			CFDictionaryRef prev = nullptr;
-			uint64_t prev_ns = 0;
+			//? Due sottoscrizioni alternative, se ne campiona una per ciclo: "main" (cpu, gpu, energia, AMC, CLPC)
+			//? e "full" (main + istogrammi PMP per le stime di banda DRAM e uso ANE), solo se le stime si mostrano.
+			//? Il costo di IOReportCreateSamples e' quasi tutto fisso per chiamata (~4-5 ms di CPU a frequenza
+			//? bassa): una seconda sottoscrizione PMP separata costerebbe ~1,7 ms, dentro la stessa ~0,6 ms.
+			Subscription main, full;
+			Subscription* used = nullptr; //? quella del campione precedente
+			bool amc_direct = false; //? l'ultimo campione aveva la banda DRAM diretta (AMC)
 
 			std::unique_ptr<Cpu::SMCConnection> smc;
-			std::map<char, std::vector<std::string>> smc_temp_keys;
+			SmcTempRing smc_temps;
 			std::vector<std::string> smc_dram_keys;
 
 			std::unique_ptr<Cpu::HidThermal> hid;
@@ -293,26 +340,51 @@ namespace AppleSoc {
 				if (S.clpc_bundle.empty()) S.clpc_bundle = bundle;
 				auto channels = clpc_energy_channels(bundle, S.os_version);
 				if (not channels) continue;
+				S.clpc_bundle = bundle;
 				for (const auto& c : *channels) {
 					auto ch = clpc_channel(driver, c.id, c.name);
 					CFArrayAppendValue(selected, ch);
 					CFRelease(ch);
 				}
 				S.clpc_channels = true;
+				//? i contatori in tabella sono gia' aggregati (anche i due die degli Ultra): una sola istanza,
+				//? altrimenti una seconda istanza AppleCLPC sommerebbe di nuovo la stessa energia
+				break;
 			}
 			IOObjectRelease(it);
 		}
 
-		bool want_channel(const std::string& g, const std::string& sg, const std::string& c) {
+		//? canali della sottoscrizione principale
+		bool want_channel(const std::string& g, const std::string& sg, const std::string& c, std::optional<int> os) {
 			if (g == "CPU Stats") return sg == "CPU Core Performance States";
 			if (g == "GPU Stats") return sg == "GPU Performance States";
-			if (g == "Energy Model") return c == "GPU Energy" or c.ends_with("CPU Energy") or c.starts_with("ANE") or c.starts_with("DRAM");
-			if (g == "AMC Stats") return c == "DCS RD" or c == "DCS WR";
-			if (g.starts_with("PMP")) {
-				if (sg == "DCS BW" and c == "AMCC RD+WR") return true;
-				if (sg.find("Floor") != std::string::npos and c.find("ANE") != std::string::npos) return true;
+			if (g == "Energy Model") {
+				//? su macOS 27 CPU/ANE/DRAM dell'Energy Model sono bloccati a 0 ma costano ~1,3 ms per campione:
+				//? resta solo GPU Energy (fonte della potenza GPU e riferimento del controllo CLPC)
+				if (c == "GPU Energy") return true;
+				return (not os or *os < 27) and (c.ends_with("CPU Energy") or c.starts_with("ANE") or c.starts_with("DRAM"));
 			}
+			if (g == "AMC Stats") return c == "DCS RD" or c == "DCS WR";
 			return false;
+		}
+
+		//? canali della sottoscrizione PMP (stime)
+		bool want_pmp_channel(const std::string& g, const std::string& sg, const std::string& c) {
+			if (not g.starts_with("PMP")) return false;
+			if (sg == "DCS BW" and c == "AMCC RD+WR") return true;
+			return sg.find("Floor") != std::string::npos and c.find("ANE") != std::string::npos;
+		}
+
+		bool subscribe(CFDictionaryRef all, CFMutableArrayRef selected, Subscription& out) {
+			if (CFArrayGetCount(selected) == 0) return false;
+			out.chan = CFDictionaryCreateMutableCopy(kCFAllocatorDefault, 0, all);
+			CFDictionarySetValue(out.chan, CFSTR("IOReportChannels"), selected);
+			out.sub = IOReportCreateSubscription(nullptr, out.chan, &out.subscribed, 0, nullptr);
+			if (not out.sub) {
+				out.release();
+				return false;
+			}
+			return true;
 		}
 
 		bool init_ioreport(State& S) {
@@ -321,23 +393,21 @@ namespace AppleSoc {
 			auto arr = (CFArrayRef)CFDictionaryGetValue(all, CFSTR("IOReportChannels"));
 			if (not arr) { CFRelease(all); return false; }
 			CFMutableArrayRef selected = CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks);
+			CFMutableArrayRef pmp = CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks);
 			for (CFIndex i = 0; i < CFArrayGetCount(arr); i++) {
 				auto item = (CFDictionaryRef)CFArrayGetValueAtIndex(arr, i);
-				if (want_channel(cfstr(IOReportChannelGetGroup(item)), cfstr(IOReportChannelGetSubGroup(item)), cfstr(IOReportChannelGetChannelName(item))))
-					CFArrayAppendValue(selected, item);
+				const auto g = cfstr(IOReportChannelGetGroup(item)), sg = cfstr(IOReportChannelGetSubGroup(item)), c = cfstr(IOReportChannelGetChannelName(item));
+				if (want_channel(g, sg, c, S.os)) CFArrayAppendValue(selected, item);
+				else if (want_pmp_channel(g, sg, c)) CFArrayAppendValue(pmp, item);
 			}
 			add_clpc_channels(S, selected);
-			S.chan = CFDictionaryCreateMutableCopy(kCFAllocatorDefault, 0, all);
-			CFDictionarySetValue(S.chan, CFSTR("IOReportChannels"), selected);
+			const bool ok = subscribe(all, selected, S.main);
+			CFArrayAppendArray(pmp, selected, CFRangeMake(0, CFArrayGetCount(selected)));
+			if (ok) subscribe(all, pmp, S.full);
 			CFRelease(selected);
+			CFRelease(pmp);
 			CFRelease(all);
-			S.sub = IOReportCreateSubscription(nullptr, S.chan, &S.subscribed, 0, nullptr);
-			if (not S.sub) {
-				CFRelease(S.chan);
-				S.chan = nullptr;
-				return false;
-			}
-			return true;
+			return ok;
 		}
 
 		void init_smc(State& S) {
@@ -347,20 +417,29 @@ namespace AppleSoc {
 				S.smc.reset();
 				return;
 			}
-			//? chiavi di temperatura per livello/GPU (solo "flt "), al massimo 64 per classe per contenere il costo
+			//? chiavi di temperatura per livello/GPU (solo "flt "), al massimo 64 per classe
+			std::map<char, std::vector<std::string>> by_class;
 			for (const auto& key : S.smc->listKeys()) {
 				const char cls = classify_smc_temp_key(key, S.has_super);
 				if (cls != 0) {
-					auto& v = S.smc_temp_keys[cls];
+					auto& v = by_class[cls];
 					if (v.size() < 64 and S.smc->keyType(key) == "flt ") v.push_back(key);
 				}
 			}
 			//? Tf* vale per i core P solo dove mancano i Tp* (M3)
-			if (auto f = S.smc_temp_keys.find('F'); f != S.smc_temp_keys.end()) {
-				if (S.smc_temp_keys['P'].empty()) S.smc_temp_keys['P'] = f->second;
-				S.smc_temp_keys.erase('F');
+			if (auto f = by_class.find('F'); f != by_class.end()) {
+				if (by_class['P'].empty()) by_class['P'] = f->second;
+				by_class.erase('F');
 			}
-			if (S.smc_temp_keys.contains('P') and S.smc_temp_keys['P'].empty()) S.smc_temp_keys.erase('P');
+			//? tutte le chiavi "flt " della classe restano in rotazione: un sensore a 0 all'avvio (GPU spenta
+			//? dal power gating) torna buono sotto carico. Il filtro di plausibilita' vale per ogni lettura;
+			//? questa prima lettura di tutte fa gia' da primo campione.
+			for (const auto& [cls, keys] : by_class) {
+				for (const auto& key : keys) {
+					auto v = S.smc->readValue(key);
+					S.smc_temps.keys.push_back(SmcTempRing::Key{.key = key, .cls = cls, .value = (v and plausible_die_temp(*v)) ? v : std::nullopt});
+				}
+			}
 			//? DRAM da SMC: PZD1, PZD2... contigui da 1
 			for (int i = 1; i <= 8; i++) {
 				auto key = fmt::format("PZD{}", i);
@@ -438,16 +517,28 @@ namespace AppleSoc {
 		}
 
 		void fill_power(State& S, const Raw& R, Sample& s) {
-			if (R.clpc_cpu) { s.cpu_power_w = R.clpc_cpu; s.sources["cpu_power"] = "clpc"; }
+			//? CLPC: canali costruiti da una tabella per build, controllati contro GPU Energy dell'Energy Model
+			bool clpc = false;
+			if (S.clpc_channels) {
+				const auto check = S.clpc_validator.feed(R.clpc_cpu, R.clpc_gpu, R.clpc_ane, R.em_gpu);
+				clpc = check != ClpcCheck::rejected;
+				s.clpc_gpu_w = R.clpc_gpu;
+				s.clpc_check = clpc_check_name(check);
+				s.sources["clpc_check"] = s.clpc_check + (S.clpc_build_ok ? "" : " (build " + S.os_build + " non verificata)");
+			}
+			//? in attesa del controllo (GPU mai abbastanza attiva) i valori CLPC si mostrano marcati "~"
+			const bool clpc_unverified = clpc and S.clpc_validator.state() != ClpcCheck::verified;
+			if (clpc and R.clpc_cpu) { s.cpu_power_w = R.clpc_cpu; s.sources["cpu_power"] = "clpc"; s.cpu_power_unverified = clpc_unverified; }
 			else if (auto v = em_usable(S, R.em_cpu)) { s.cpu_power_w = v; s.sources["cpu_power"] = "energy_model"; }
 
-			if (R.em_gpu and (*R.em_gpu > 0 or not R.clpc_gpu)) { s.gpu_power_w = R.em_gpu; s.sources["gpu_power"] = "energy_model"; }
-			else if (R.clpc_gpu) { s.gpu_power_w = R.clpc_gpu; s.sources["gpu_power"] = "clpc"; }
+			if (R.em_gpu and (*R.em_gpu > 0 or not (clpc and R.clpc_gpu))) { s.gpu_power_w = R.em_gpu; s.sources["gpu_power"] = "energy_model"; }
+			else if (clpc and R.clpc_gpu) { s.gpu_power_w = R.clpc_gpu; s.sources["gpu_power"] = "clpc"; }
 
-			if (R.clpc_ane) { s.ane_power_w = R.clpc_ane; s.sources["ane_power"] = "clpc"; }
+			if (clpc and R.clpc_ane) { s.ane_power_w = R.clpc_ane; s.sources["ane_power"] = "clpc"; s.ane_power_unverified = clpc_unverified; }
 			else if (auto v = em_usable(S, R.em_ane)) { s.ane_power_w = v; s.sources["ane_power"] = "energy_model"; }
 
 			if (auto v = em_usable(S, R.em_dram)) { s.dram_power_w = v; s.sources["dram_power"] = "energy_model"; }
+			if (s.cpu_power_w) S.cpu_power_seen = true;
 		}
 
 		void fill_smc(State& S, Sample& s) {
@@ -468,34 +559,41 @@ namespace AppleSoc {
 			}
 		}
 
-		std::optional<double> smc_avg(State& S, char cls) {
-			if (not S.smc) return std::nullopt;
-			auto it = S.smc_temp_keys.find(cls);
-			if (it == S.smc_temp_keys.end()) return std::nullopt;
-			std::vector<double> values;
-			for (const auto& key : it->second)
-				if (auto v = S.smc->readValue(key)) values.push_back(*v);
-			return average_valid(values);
-		}
+		//? chiavi SMC rilette a ogni campione: con 16 chiavi (~0,25 ms) un M2 Max (57 chiavi E+P) gira in 4 campioni
+		constexpr size_t kSmcTempBudget = 16;
 
 		void fill_temps(State& S, Sample& s, double dt) {
 			std::map<char, std::vector<double>> hid;
 			if (S.hid)
 				for (const auto& [name, value] : S.hid->read()) hid[classify_hid_sensor(name)].push_back(value);
 
+			//? SMC solo per le classi che l'HID non copre in questo campione, a rotazione
+			std::string needed;
+			for (const auto& c : s.clusters)
+				if (not c.label.empty() and not (hid.contains(c.label[0]) and average_valid(hid[c.label[0]]))) needed += c.label[0];
+			if (not (hid.contains('G') and average_valid(hid['G']))) needed += 'G';
+			if (S.smc and not needed.empty()) {
+				for (size_t i : S.smc_temps.due(needed, kSmcTempBudget)) {
+					auto& k = S.smc_temps.keys[i];
+					auto v = S.smc->readValue(k.key);
+					k.value = (v and plausible_die_temp(*v)) ? v : std::nullopt;
+				}
+			}
+			auto smc_avg = [&](char cls) { return S.smc_temps.average(cls); };
+
 			for (size_t i = 0; i < s.clusters.size(); i++) {
 				const char cls = s.clusters[i].label.empty() ? 0 : s.clusters[i].label[0];
 				std::optional<double> v;
 				std::string src;
 				if (auto h = hid.find(cls); h != hid.end()) { v = average_valid(h->second); src = "hid"; }
-				if (not v) { v = smc_avg(S, cls); src = "smc"; }
+				if (not v) { v = smc_avg(cls); src = "smc"; }
 				s.clusters[i].temp_c = S.tier_filters[i].feed(v, dt);
 				if (s.clusters[i].temp_c) s.sources["temp_" + s.clusters[i].label] = src;
 			}
 			std::optional<double> g;
 			std::string src;
 			if (auto h = hid.find('G'); h != hid.end()) { g = average_valid(h->second); src = "hid"; }
-			if (not g) { g = smc_avg(S, 'G'); src = "smc"; }
+			if (not g) { g = smc_avg('G'); src = "smc"; }
 			s.gpu_temp_c = S.gpu_filter.feed(g, dt);
 			if (s.gpu_temp_c) s.sources["gpu_temp"] = src;
 		}
@@ -527,6 +625,12 @@ namespace AppleSoc {
 			S.prev_ticks = std::move(cur);
 		}
 
+		//? PMP solo se qualcuno mostra le stime (la stima di banda solo quando manca il dato diretto AMC)
+		Subscription* wanted_subscription(State& S) {
+			const bool want_pmp = S.full.sub and (S.wants.ane_estimate or (S.wants.dram_bw_estimate and not S.amc_direct));
+			return want_pmp ? &S.full : &S.main;
+		}
+
 		Sample take(State& S) {
 			Sample s;
 			const uint64_t t = now_ns();
@@ -541,46 +645,48 @@ namespace AppleSoc {
 			}
 			if (not S.gpu_freqs.empty()) s.gpu_freq_max_mhz = S.gpu_freqs.back();
 
+			//? Il delta di questo ciclo viene dalla sottoscrizione gia' avviata (ha il campione di base);
+			//? se ora ne serve un'altra, le si prende subito il campione di base: dal ciclo dopo si usa quella,
+			//? senza perdere campioni. Quella lasciata riparte da zero (il suo delta coprirebbe la pausa).
+			Subscription* sub = (S.used and S.used->prev) ? S.used : wanted_subscription(S);
+			const bool had_prev = sub->prev != nullptr;
 			double dt = 0;
-			if (S.sub) {
-				CFDictionaryRef cur = IOReportCreateSamples(S.sub, S.subscribed ? S.subscribed : S.chan, nullptr);
-				if (cur) {
-					if (S.prev) {
-						dt = static_cast<double>(t - S.prev_ns) / 1e9;
-						CFDictionaryRef delta = IOReportCreateSamplesDelta(S.prev, cur, nullptr);
-						CFRelease(S.prev);
-						if (delta) {
-							Raw R;
-							parse_delta(S, delta, dt, R);
-							CFRelease(delta);
-							s.valid = dt > 0;
-							s.interval_s = dt;
-							for (size_t i = 0; i < R.tiers.size() and i < s.clusters.size(); i++) {
-								s.clusters[i].freq_mhz = avg_freq(R.tiers[i]);
-								s.clusters[i].active_pct = active_pct(R.tiers[i]);
-							}
-							if (R.gpu) {
-								s.gpu_usage_pct = active_pct(*R.gpu);
-								s.gpu_freq_mhz = avg_freq(*R.gpu);
-							}
-							fill_power(S, R, s);
-							if (R.amc_bytes and *R.amc_bytes > 0 and dt > 0) {
-								//? 0 byte in un intervallo vuol dire contatori bloccati (c'e' sempre traffico DRAM)
-								s.dram_bw_gbs = static_cast<double>(*R.amc_bytes) / dt / 1e9;
-								s.sources["dram_bw"] = "amc DCS";
-							}
-							if (R.pmp_bw_gbs) { s.dram_bw_estimate_gbs = R.pmp_bw_gbs; s.sources["dram_bw_estimate"] = "pmp DCS BW AMCC"; }
-							if (R.ane_floor_pct) { s.ane_usage_estimate_pct = R.ane_floor_pct; s.sources["ane_usage_estimate"] = "pmp ANE floor"; }
-						}
-					}
-					S.prev = cur;
-					S.prev_ns = t;
+			if (CFDictionaryRef delta = sub->delta(t, dt)) {
+				Raw R;
+				parse_delta(S, delta, dt, R);
+				CFRelease(delta);
+				s.valid = had_prev and dt > 0;
+				s.interval_s = dt;
+				for (size_t i = 0; i < R.tiers.size() and i < s.clusters.size(); i++) {
+					s.clusters[i].freq_mhz = avg_freq(R.tiers[i]);
+					s.clusters[i].active_pct = active_pct(R.tiers[i]);
 				}
+				if (R.gpu) {
+					s.gpu_usage_pct = active_pct(*R.gpu);
+					s.gpu_freq_mhz = avg_freq(*R.gpu);
+				}
+				fill_power(S, R, s);
+				if (R.amc_bytes and *R.amc_bytes > 0 and dt > 0) {
+					//? 0 byte in un intervallo vuol dire contatori bloccati (c'e' sempre traffico DRAM)
+					s.dram_bw_gbs = static_cast<double>(*R.amc_bytes) / dt / 1e9;
+					s.sources["dram_bw"] = "amc DCS";
+				}
+				if (R.pmp_bw_gbs) { s.dram_bw_estimate_gbs = R.pmp_bw_gbs; s.sources["dram_bw_estimate"] = "pmp DCS BW AMCC"; }
+				if (R.ane_floor_pct) { s.ane_usage_estimate_pct = R.ane_floor_pct; s.sources["ane_usage_estimate"] = "pmp ANE floor"; }
+			}
+			//? il dato diretto si giudica solo da un campione completo
+			if (s.valid) S.amc_direct = s.dram_bw_gbs.has_value();
+			S.used = sub;
+			if (Subscription* next = wanted_subscription(S); next != sub) {
+				next->forget();
+				next->baseline(t);
+				sub->forget();
+				S.used = next;
 			}
 			fill_smc(S, s);
 			fill_temps(S, s, dt > 0 ? dt : 1.0);
 			fill_ticks(S, s);
-			if (auto name = thermal_state_name(sitop_thermal_state()); not name.empty()) s.thermal_state = name;
+			if (auto name = thermal_state_name(soc_thermal_state()); not name.empty()) s.thermal_state = name;
 			return s;
 		}
 	} // namespace
@@ -591,7 +697,9 @@ namespace AppleSoc {
 		S.tried = true;
 		S.chip = sysctl_str("machdep.cpu.brand_string").value_or("");
 		S.os_version = sysctl_str("kern.osproductversion").value_or("");
+		S.os_build = sysctl_str("kern.osversion").value_or("");
 		S.os = os_major(S.os_version);
+		S.clpc_build_ok = clpc_build_verified(S.os_build);
 		if (sysctl_int("hw.optional.arm64").value_or(0) != 1) return false;
 
 		init_topology(S);
@@ -614,15 +722,18 @@ namespace AppleSoc {
 
 	bool has_cpu_power() {
 		const auto& S = st();
-		return S.ok and (S.clpc_channels or (S.os and *S.os < 27));
+		return S.ok and S.cpu_power_seen;
+	}
+
+	void set_wants(const Wants& w) {
+		st().wants = w;
 	}
 
 	void shutdown() {
 		auto& S = st();
-		if (S.prev) { CFRelease(S.prev); S.prev = nullptr; }
-		if (S.subscribed) { CFRelease(S.subscribed); S.subscribed = nullptr; }
-		if (S.chan) { CFRelease(S.chan); S.chan = nullptr; }
-		if (S.sub) { CFRelease((CFTypeRef)S.sub); S.sub = nullptr; }
+		S.main.release();
+		S.full.release();
+		S.used = nullptr;
 		S.smc.reset();
 		S.hid.reset();
 		S.ok = false;
@@ -642,10 +753,61 @@ namespace AppleSoc {
 		return st().last;
 	}
 
+	auto gpu_clients() -> std::vector<GpuClient> {
+		std::vector<GpuClient> out;
+		//? il creatore di un client non cambia: pid in cache per id, cosi' a ogni lettura basta AppUsage
+		//? (una chiamata al kernel per client invece di due: ~1,9 ms di CPU invece di ~2,8 con ~100 client)
+		static std::map<uint64_t, int> pid_cache;
+		std::map<uint64_t, int> seen;
+		io_iterator_t accels;
+		if (IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IOAccelerator"), &accels) != kIOReturnSuccess) return out;
+		io_object_t accel;
+		while ((accel = IOIteratorNext(accels)) != 0) {
+			io_iterator_t children;
+			if (IORegistryEntryGetChildIterator(accel, kIOServicePlane, &children) == kIOReturnSuccess) {
+				io_object_t child;
+				while ((child = IOIteratorNext(children)) != 0) {
+					if (IOObjectConformsTo(child, "IOUserClient")) {
+						GpuClient c;
+						IORegistryEntryGetRegistryEntryID(child, &c.id);
+						if (auto cached = pid_cache.find(c.id); cached != pid_cache.end()) c.pid = cached->second;
+						else if (auto creator = (CFStringRef)IORegistryEntryCreateCFProperty(child, CFSTR("IOUserClientCreator"), kCFAllocatorDefault, 0)) {
+							if (CFGetTypeID(creator) == CFStringGetTypeID()) c.pid = parse_creator_pid(cfstr(creator)).value_or(-1);
+							CFRelease(creator);
+						}
+						seen[c.id] = c.pid;
+						if (c.pid <= 0) { IOObjectRelease(child); continue; }
+						if (auto usage = (CFArrayRef)IORegistryEntryCreateCFProperty(child, CFSTR("AppUsage"), kCFAllocatorDefault, 0)) {
+							if (CFGetTypeID(usage) == CFArrayGetTypeID()) {
+								for (CFIndex i = 0; i < CFArrayGetCount(usage); i++) {
+									auto entry = (CFDictionaryRef)CFArrayGetValueAtIndex(usage, i);
+									if (not entry or CFGetTypeID(entry) != CFDictionaryGetTypeID()) continue;
+									auto n = (CFNumberRef)CFDictionaryGetValue(entry, CFSTR("accumulatedGPUTime"));
+									int64_t v = 0;
+									if (n and CFGetTypeID(n) == CFNumberGetTypeID() and CFNumberGetValue(n, kCFNumberSInt64Type, &v) and v > 0)
+										c.gpu_ns += static_cast<uint64_t>(v);
+								}
+							}
+							CFRelease(usage);
+						}
+						if (c.pid > 0) out.push_back(c);
+					}
+					IOObjectRelease(child);
+				}
+				IOObjectRelease(children);
+			}
+			IOObjectRelease(accel);
+		}
+		IOObjectRelease(accels);
+		pid_cache = std::move(seen);
+		return out;
+	}
+
 	std::string to_json(const Sample& s) {
 		std::string out = fmt::format("{{\"timestamp_ms\":{},\"valid\":{},\"interval_ms\":{}", s.timestamp_ms, s.valid ? "true" : "false", json_number(s.valid ? std::optional<double>(s.interval_s * 1000.0) : std::nullopt, 1));
 		const auto& S = st();
-		out += fmt::format(",\"chip\":{},\"os\":{},\"clpc_driver\":{}", json_string(S.chip), json_string(S.os_version), S.clpc_bundle.empty() ? "null" : json_string(S.clpc_bundle));
+		out += fmt::format(",\"chip\":{},\"os\":{},\"os_build\":{},\"clpc_driver\":{},\"clpc_check\":{}", json_string(S.chip), json_string(S.os_version),
+			json_string(S.os_build), S.clpc_bundle.empty() ? "null" : json_string(S.clpc_bundle), s.clpc_check.empty() ? "null" : json_string(s.clpc_check));
 		out += ",\"clusters\":[";
 		for (size_t i = 0; i < s.clusters.size(); i++) {
 			const auto& c = s.clusters[i];
@@ -661,6 +823,7 @@ namespace AppleSoc {
 			json_number(s.gpu_usage_pct, 2), json_number(s.gpu_freq_mhz, 0), json_number(s.gpu_freq_max_mhz, 0), json_number(s.gpu_power_w, 3), json_number(s.gpu_temp_c, 2));
 		out += fmt::format(",\"power\":{{\"cpu_w\":{},\"gpu_w\":{},\"ane_w\":{},\"dram_w\":{},\"system_w\":{}}}",
 			json_number(s.cpu_power_w), json_number(s.gpu_power_w), json_number(s.ane_power_w), json_number(s.dram_power_w), json_number(s.system_power_w));
+		out += fmt::format(",\"clpc_gpu_w\":{}", json_number(s.clpc_gpu_w));
 		out += fmt::format(",\"ane\":{{\"power_w\":{},\"usage_estimate_pct\":{}}}", json_number(s.ane_power_w), json_number(s.ane_usage_estimate_pct, 2));
 		out += fmt::format(",\"dram_bw_gbs\":{},\"dram_bw_estimate_gbs\":{}", json_number(s.dram_bw_gbs), json_number(s.dram_bw_estimate_gbs));
 		out += fmt::format(",\"thermal_state\":{}", s.thermal_state ? json_string(*s.thermal_state) : "null");
@@ -676,7 +839,7 @@ namespace AppleSoc {
 
 	int dump(uint32_t count, uint32_t interval_ms) {
 		if (not init()) {
-			std::fputs("sitop: --dump-soc richiede un Mac Apple Silicon\n", stderr);
+			std::fputs(APP_NAME ": --dump-soc richiede un Mac Apple Silicon\n", stderr);
 			return 1;
 		}
 		count = std::max<uint32_t>(count, 1);

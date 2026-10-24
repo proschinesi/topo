@@ -12,7 +12,7 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 
-   Modified for sitop (fork of btop for Apple Silicon), 2026: see NOTICE.
+   Modified for topo (fork of btop for Apple Silicon), 2026: see NOTICE.
 
 indent = tab
 tab-size = 4
@@ -34,7 +34,7 @@ namespace Cpu {
 		long long getSensors(std::vector<long long>& core_temps);
 	};
 
-	//? sitop: lettore HID persistente per i sensori di temperatura selezionati (cluster CPU, GPU).
+	//? topo: lettore HID persistente per i sensori di temperatura selezionati (cluster CPU, GPU).
 	//? Il client e l'elenco dei servizi restano aperti; l'elenco viene riletto ogni refresh_s secondi.
 	class HidThermal {
 	   public:

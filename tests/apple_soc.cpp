@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Modified for sitop (fork of btop for Apple Silicon), 2026: see NOTICE.
+// Modified for topo (fork of btop for Apple Silicon), 2026: see NOTICE.
 // Test delle funzioni pure di src/osx/apple_soc (nessun accesso all'hardware).
 // I casi CLPC riprendono quelli di macmon src/clpc.rs (MIT, Copyright (c) 2024 vladkens).
 
@@ -299,4 +299,138 @@ TEST(apple_soc, json_helpers) {
 	EXPECT_EQ(thermal_state_name(9), "");
 	EXPECT_EQ(format_freq(3504), "3.5 GHz");
 	EXPECT_EQ(format_freq(912), "912 MHz");
+}
+
+// ---- controllo incrociato CLPC ----
+
+TEST(apple_soc, clpc_build_verified) {
+	EXPECT_TRUE(clpc_build_verified("26A428"));
+	EXPECT_TRUE(clpc_build_verified("26A434"));
+	EXPECT_FALSE(clpc_build_verified("26B101"));
+	EXPECT_FALSE(clpc_build_verified(""));
+}
+
+TEST(apple_soc, clpc_validator_verifies_on_agreement) {
+	ClpcValidator v;
+	// GPU ferma: niente confronto, resta in attesa
+	for (int i = 0; i < 10; i++) EXPECT_EQ(v.feed(1.0, 0.01, 0.0, 0.0), ClpcCheck::pending);
+	// sotto carico i due contatori concordano (M2 Max: rapporto 0,98)
+	EXPECT_EQ(v.feed(2.0, 16.79, 0.0, 16.96), ClpcCheck::pending);
+	EXPECT_EQ(v.feed(2.0, 17.42, 0.0, 17.72), ClpcCheck::pending);
+	EXPECT_EQ(v.feed(2.0, 17.68, 0.0, 18.01), ClpcCheck::verified);
+}
+
+TEST(apple_soc, clpc_validator_rejects_wrong_counters) {
+	ClpcValidator v;
+	// indici sbagliati: il contatore "GPU" di CLPC non segue la GPU dell'Energy Model
+	for (int i = 0; i < ClpcValidator::reject_after - 1; i++) EXPECT_EQ(v.feed(3.0, 0.4, 0.0, 15.0), ClpcCheck::pending);
+	EXPECT_EQ(v.feed(3.0, 0.4, 0.0, 15.0), ClpcCheck::rejected);
+	// definitivo: anche un campione concorde non lo riabilita
+	EXPECT_EQ(v.feed(3.0, 15.0, 0.0, 15.0), ClpcCheck::rejected);
+}
+
+TEST(apple_soc, clpc_validator_rejects_busy_counter_on_idle_gpu_and_absurd_values) {
+	ClpcValidator idle;
+	for (int i = 0; i < ClpcValidator::reject_after; i++) idle.feed(1.0, 5.0, 0.0, 0.0);
+	EXPECT_EQ(idle.state(), ClpcCheck::rejected);
+
+	ClpcValidator absurd;
+	for (int i = 0; i < ClpcValidator::reject_after; i++) absurd.feed(1e6, std::nullopt, 0.0, std::nullopt);
+	EXPECT_EQ(absurd.state(), ClpcCheck::rejected);
+
+	// un disaccordo isolato si azzera col primo accordo
+	ClpcValidator noisy;
+	for (int r = 0; r < 4; r++) {
+		for (int i = 0; i < ClpcValidator::reject_after - 1; i++) noisy.feed(2.0, 1.0, 0.0, 10.0);
+		noisy.feed(2.0, 10.0, 0.0, 10.0);
+	}
+	EXPECT_NE(noisy.state(), ClpcCheck::rejected);
+	EXPECT_EQ(clpc_check_name(ClpcCheck::verified), "verified");
+}
+
+// ---- SMC a rotazione ----
+
+TEST(apple_soc, smc_temp_ring_rotation_and_average) {
+	SmcTempRing ring;
+	for (int i = 0; i < 6; i++) ring.keys.push_back({.key = "Tp0" + std::to_string(i), .cls = 'P', .value = 50.0 + i});
+	ring.keys.push_back({.key = "Te00", .cls = 'E', .value = 40.0});
+	ring.keys.push_back({.key = "Tg00", .cls = 'G', .value = std::nullopt});
+
+	// solo le classi richieste, al massimo budget per volta, poi si riprende da dove si era rimasti
+	auto a = ring.due("PE", 4);
+	EXPECT_EQ(a, (std::vector<size_t>{0, 1, 2, 3}));
+	auto b = ring.due("PE", 4);
+	EXPECT_EQ(b, (std::vector<size_t>{4, 5, 6, 0}));
+	auto g = ring.due("G", 4);
+	EXPECT_EQ(g, (std::vector<size_t>{7}));
+	EXPECT_TRUE(ring.due("", 4).empty());
+
+	EXPECT_DOUBLE_EQ(*ring.average('P'), 52.5);
+	EXPECT_DOUBLE_EQ(*ring.average('E'), 40.0);
+	EXPECT_FALSE(ring.average('G').has_value());
+	EXPECT_FALSE(ring.average('S').has_value());
+}
+
+// ---- GPU per processo ----
+
+TEST(apple_soc, gpu_time_tracker) {
+	GpuTimeTracker t;
+	using C = AppleSoc::GpuClient;
+	// prima lettura: nessun valore
+	EXPECT_TRUE(t.feed({C{1, 100, 5'000'000'000}, C{2, 200, 0}}, 1'000'000'000).empty());
+	// 1 s dopo: il pid 100 ha usato 0,3 s sul client noto; il client 3 e' nuovo e fa solo da base
+	// (il suo tempo accumulato puo' venire da prima dell'intervallo); il 200 nulla
+	auto u = t.feed({C{1, 100, 5'300'000'000}, C{3, 100, 200'000'000}, C{2, 200, 0}}, 2'000'000'000);
+	EXPECT_NEAR(u.at(100), 30.0, 1e-9);
+	EXPECT_NEAR(u.at(200), 0.0, 1e-9);
+	// lettura vuota (fallita): nessun valore e la base resta
+	EXPECT_TRUE(t.feed({}, 2'500'000'000).empty());
+	// contatore che cala (client ricreato con lo stesso id) = 0, mai negativo; oltre il 100% si taglia
+	u = t.feed({C{1, 100, 1'000}, C{3, 100, 2'200'000'000}, C{2, 200, 0}}, 3'000'000'000);
+	EXPECT_NEAR(u.at(100), 100.0, 1e-9);
+	EXPECT_NEAR(u.at(200), 0.0, 1e-9);
+	// un client che compare con molto tempo accumulato non porta il suo pid al 100%
+	u = t.feed({C{1, 100, 1'000}, C{3, 100, 2'200'000'000}, C{2, 200, 0}, C{9, 300, 50'000'000'000}}, 4'000'000'000);
+	EXPECT_NEAR(u.at(300), 0.0, 1e-9);
+	EXPECT_NEAR(u.at(100), 0.0, 1e-9);
+}
+
+TEST(apple_soc, held_value_bridges_short_gaps_only) {
+	HeldValue h;
+	EXPECT_FALSE(h.feed(std::nullopt).has_value());
+	EXPECT_DOUBLE_EQ(*h.feed(3.0), 3.0);
+	EXPECT_TRUE(h.fresh());
+	// uno o due campioni senza dato: resta l'ultimo valore
+	EXPECT_DOUBLE_EQ(*h.feed(std::nullopt), 3.0);
+	EXPECT_FALSE(h.fresh());
+	EXPECT_DOUBLE_EQ(*h.feed(std::nullopt), 3.0);
+	// al terzo sparisce (es. CLPC scartata) e non torna da solo
+	EXPECT_FALSE(h.feed(std::nullopt).has_value());
+	EXPECT_FALSE(h.feed(std::nullopt).has_value());
+	EXPECT_DOUBLE_EQ(*h.feed(4.0), 4.0);
+}
+
+TEST(apple_soc, parse_creator_pid) {
+	EXPECT_EQ(parse_creator_pid("pid 402, WindowServer"), 402);
+	EXPECT_EQ(parse_creator_pid("pid 7"), 7);
+	EXPECT_FALSE(parse_creator_pid("WindowServer").has_value());
+	EXPECT_FALSE(parse_creator_pid("pid , x").has_value());
+}
+
+TEST(apple_soc, smc_temp_ring_keeps_keys_unreadable_at_start) {
+	// un sensore GPU a 0 all'avvio (power gating) resta in rotazione e conta appena torna plausibile
+	SmcTempRing ring;
+	ring.keys.push_back({.key = "Tg0a", .cls = 'G', .value = std::nullopt});
+	ring.keys.push_back({.key = "Tg0b", .cls = 'G', .value = std::nullopt});
+	EXPECT_FALSE(ring.average('G').has_value());
+	for (size_t i : ring.due("G", 16)) ring.keys[i].value = 60.0 + static_cast<double>(i);
+	EXPECT_DOUBLE_EQ(*ring.average('G'), 60.5);
+}
+
+TEST(apple_soc, plausible_die_temp) {
+	EXPECT_FALSE(plausible_die_temp(6.3)); // Tp* di un core P spento (M2 Max)
+	EXPECT_FALSE(plausible_die_temp(0.0));
+	EXPECT_TRUE(plausible_die_temp(20.0));
+	EXPECT_TRUE(plausible_die_temp(55.5));
+	EXPECT_FALSE(plausible_die_temp(151.0));
 }

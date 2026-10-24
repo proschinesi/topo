@@ -12,7 +12,7 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 
-   Modified for sitop (fork of btop for Apple Silicon), 2026: see NOTICE.
+   Modified for topo (fork of btop for Apple Silicon), 2026: see NOTICE.
 
 indent = tab
 tab-size = 4
@@ -56,7 +56,7 @@ const vector<string> Config::valid_boxes = {
 #ifdef GPU_SUPPORT
 	,"gpu0", "gpu1", "gpu2", "gpu3", "gpu4", "gpu5"
 #endif
-#ifdef SITOP_PWR_BOX
+#ifdef SOC_PWR_BOX
 	,"pwr"
 #endif
 };
@@ -79,8 +79,8 @@ namespace Config {
 
 	const vector<array<string, 2>> descriptions = {
 		{"color_theme", 		"#* Name of a btop++/bpytop/bashtop formatted \".theme\" file, \"Default\" and \"TTY\" for builtin themes.\n"
-								"#* Themes are searched in \"$HOME/.config/" SITOP_NAME "/themes\", \"$HOME/.config/btop/themes\",\n"
-								"#* \"../share/btop/themes\" and \"../share/" SITOP_NAME "/themes\" relative to binary, then /opt/homebrew, /usr/local and /usr \"share/btop/themes\""},
+								"#* Themes are searched in \"$HOME/.config/" APP_NAME "/themes\", \"$HOME/.config/btop/themes\",\n"
+								"#* \"../share/btop/themes\" and \"../share/" APP_NAME "/themes\" relative to binary, then /opt/homebrew, /usr/local and /usr \"share/btop/themes\""},
 
 		{"theme_background", 	"#* If the theme set background should be shown, set to False if you want terminal background transparency."},
 
@@ -256,9 +256,19 @@ namespace Config {
 
 		{"show_battery_watts",	"#* Show power stats of battery next to charge indicator."},
 
-		{"log_level", 			"#* Set loglevel for \"~/.local/state/" SITOP_NAME ".log\" levels are: \"ERROR\" \"WARNING\" \"INFO\" \"DEBUG\".\n"
+		{"log_level", 			"#* Set loglevel for \"~/.local/state/" APP_NAME ".log\" levels are: \"ERROR\" \"WARNING\" \"INFO\" \"DEBUG\".\n"
 								"#* The level set includes all lower levels, i.e. \"DEBUG\" will show all logging info."},
 		{"save_config_on_exit",  "#* Automatically save current settings to config file on exit."},
+	#ifdef __APPLE__ //? sempre su macOS: le legge anche la raccolta senza GPU_SUPPORT
+		//? topo: opzioni Apple Silicon
+		{"show_ane",			"#* (Apple Silicon) Show the ANE row and the split GPU/ANE graph in the gpu box. ANE power comes from CLPC counters,\n"
+								"#* the \"~x%\" use is an estimate from PMP performance floor requests, not a measured utilization."},
+		{"dram_bw_estimate",	"#* (Apple Silicon) When the direct DRAM bandwidth counters (AMC) are not readable, show the PMP histogram estimate\n"
+								"#* in the mem box as \"DRAM BW ~x GB/s (stima)\". False shows nothing in that case."},
+		{"pwr_graphs",			"#* (Apple Silicon) Show one-line graphs in the pwr box, False for numbers only (current and session max)."},
+		{"proc_gpu",			"#* (Apple Silicon) Show a Gpu% column in the process list, from the per-process GPU time of the Metal clients\n"
+								"#* (IORegistry AGXDeviceUserClient, no sudo needed). Costs about 2 ms of CPU per update (~0.2% of a core at 1000 ms)."},
+	#endif
 	#ifdef GPU_SUPPORT
 
 		{"nvml_measure_pcie_speeds",
@@ -383,6 +393,12 @@ namespace Config {
 	#endif
 		{"terminal_sync", true},
 		{"save_config_on_exit", true},
+	#ifdef __APPLE__
+		{"show_ane", true},
+		{"dram_bw_estimate", true},
+		{"pwr_graphs", true},
+		{"proc_gpu", false},
+	#endif
 		{"disable_mouse", false},
 	};
 	std::unordered_map<std::string_view, bool> boolsTmp;
