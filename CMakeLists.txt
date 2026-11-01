@@ -16,7 +16,7 @@ if("${CMAKE_CURRENT_SOURCE_DIR}" STREQUAL "${CMAKE_CURRENT_BINARY_DIR}")
 endif()
 
 set(APP_NAME "topo" CACHE STRING "Nome del programma (eseguibile, config, log)")
-set(APP_VERSION "0.1.0")
+set(APP_VERSION "0.2.0")
 
 project("${APP_NAME}"
   VERSION ${APP_VERSION}
