@@ -410,6 +410,88 @@ TEST(apple_soc, gpu_ns_by_pid) {
 	EXPECT_EQ(m.at(7), 10'000'000'000'000'000u);
 }
 
+// ---- potenza per processo ----
+
+TEST(apple_soc, energy_delta_watts) {
+	// 1 J in 1 s = 1 W; 1,37 W di un "yes" su 2 s
+	EXPECT_NEAR(*energy_delta_watts(0, 1'000'000'000, 1'000'000'000), 1.0, 1e-12);
+	EXPECT_NEAR(*energy_delta_watts(5'000'000'000, 7'740'000'000, 2'000'000'000), 1.37, 1e-9);
+	EXPECT_NEAR(*energy_delta_watts(42, 42, 1'000'000'000), 0.0, 1e-12);
+	EXPECT_FALSE(energy_delta_watts(0, 100, 0).has_value());   // intervallo nullo
+	EXPECT_FALSE(energy_delta_watts(100, 99, 1000).has_value()); // contatore che cala
+}
+
+TEST(apple_soc, proc_energy_tracker) {
+	using R = ProcEnergyReading;
+	ProcEnergyTracker t;
+	const uint64_t s = 1'000'000'000;
+	// primo campione: solo base
+	auto w = t.feed({R{10, 111, 1'000'000'000}, R{20, 222, 0}}, 1 * s);
+	ASSERT_EQ(w.size(), 2u);
+	EXPECT_FALSE(w[0].has_value());
+	EXPECT_FALSE(w[1].has_value());
+	EXPECT_EQ(t.size(), 2u);
+	// secondo campione a 2 s: 10 consuma 3 J in 2 s, 20 nulla; 30 e' nuovo (solo base)
+	w = t.feed({R{10, 111, 4'000'000'000}, R{20, 222, 0}, R{30, 333, 9'000'000'000}}, 3 * s);
+	ASSERT_EQ(w.size(), 3u);
+	EXPECT_NEAR(*w[0], 1.5, 1e-12);
+	EXPECT_NEAR(*w[1], 0.0, 1e-12);
+	EXPECT_FALSE(w[2].has_value());
+	// pid 10 riciclato (inizio diverso): nuova base, nessun valore; 20 sparito esce dallo stato
+	w = t.feed({R{10, 999, 5'000'000'000}, R{30, 333, 10'000'000'000}}, 4 * s);
+	EXPECT_FALSE(w[0].has_value());
+	EXPECT_NEAR(*w[1], 1.0, 1e-12);
+	EXPECT_EQ(t.size(), 2u);
+	// il nuovo 10 dal campione dopo; contatore di 30 che cala: nessun valore e nuova base
+	w = t.feed({R{10, 999, 6'000'000'000}, R{30, 333, 1'000}}, 5 * s);
+	EXPECT_NEAR(*w[0], 1.0, 1e-12);
+	EXPECT_FALSE(w[1].has_value());
+	w = t.feed({R{30, 333, 2'000'001'000}}, 6 * s);
+	EXPECT_NEAR(*w[0], 2.0, 1e-12);
+	// stesso istante: nessun valore, la base resta quella di prima
+	w = t.feed({R{30, 333, 2'500'001'000}}, 6 * s);
+	EXPECT_FALSE(w[0].has_value());
+	w = t.feed({R{30, 333, 3'000'001'000}}, 7 * s);
+	EXPECT_NEAR(*w[0], 1.0, 1e-12);
+	// orologio che torna indietro: nessun valore, nuova base dalla lettura (anche l'istante)
+	w = t.feed({R{30, 333, 4'000'001'000}}, 5 * s);
+	EXPECT_FALSE(w[0].has_value());
+	w = t.feed({R{30, 333, 4'500'001'000}}, 5 * s + s / 2);
+	EXPECT_NEAR(*w[0], 1.0, 1e-12);
+	// lettura vuota (tutti illeggibili o spariti): stato vuoto
+	EXPECT_TRUE(t.feed({}, 8 * s).empty());
+	EXPECT_EQ(t.size(), 0u);
+}
+
+TEST(apple_soc, gpu_power_by_pid) {
+	EXPECT_FALSE(gpu_power_by_pid(std::nullopt, {{1, 50.0}}).has_value());
+	// lettura dei client vuota (fallita o primo ciclo): parte GPU sconosciuta, non 0
+	EXPECT_FALSE(gpu_power_by_pid(2.0, {}).has_value());
+	// in proporzione al tempo GPU dei client: 30 + 10 -> 3/4 e 1/4 di 2 W (la somma e' il totale)
+	auto m = gpu_power_by_pid(2.0, {{1, 30.0}, {2, 10.0}, {3, 0.0}});
+	ASSERT_TRUE(m.has_value());
+	EXPECT_NEAR(m->at(1), 1.5, 1e-12);
+	EXPECT_NEAR(m->at(2), 0.5, 1e-12);
+	EXPECT_NEAR(m->at(3), 0.0, 1e-12);
+	// client presenti ma nessuno lavora: 0 W a tutti (tutto alla quota system)
+	m = gpu_power_by_pid(2.0, {{1, 0.0}, {2, 0.0}});
+	EXPECT_NEAR(m->at(1), 0.0, 1e-12);
+	EXPECT_NEAR(m->at(2), 0.0, 1e-12);
+	// quote sovrapposte oltre il 100%: la somma resta il totale
+	m = gpu_power_by_pid(2.0, {{1, 90.0}, {2, 60.0}});
+	EXPECT_NEAR(m->at(1), 1.2, 1e-12);
+	EXPECT_NEAR(m->at(2), 0.8, 1e-12);
+}
+
+TEST(apple_soc, unattributed_power) {
+	EXPECT_FALSE(unattributed_power(std::nullopt, 1.0, 2.0, 1.0).has_value());
+	EXPECT_NEAR(*unattributed_power(4.0, 1.5, std::nullopt, 0.0), 2.5, 1e-12);
+	EXPECT_NEAR(*unattributed_power(4.0, 1.5, 1.0, 0.25), 3.25, 1e-12);
+	// clamp di ogni parte a 0: processi oltre il totale (intervalli non allineati)
+	EXPECT_NEAR(*unattributed_power(1.0, 1.5, 1.0, 0.25), 0.75, 1e-12);
+	EXPECT_NEAR(*unattributed_power(1.0, 0.5, 1.0, 2.0), 0.5, 1e-12);
+}
+
 TEST(apple_soc, held_value_bridges_short_gaps_only) {
 	HeldValue h;
 	EXPECT_FALSE(h.feed(std::nullopt).has_value());

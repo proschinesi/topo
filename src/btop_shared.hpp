@@ -458,6 +458,19 @@ namespace Proc {
 	//? topo: true se la raccolta Gpu% per processo e' attiva (opzione proc_gpu o ordinamento "gpu")
 	bool gpu_active();
 
+	//? topo: true se la raccolta dei watt per processo e' attiva (opzione proc_power o ordinamento "power");
+	//? accende anche la raccolta Gpu% (serve alla quota GPU), non la sua colonna
+	bool power_active();
+
+	//? topo: watt per la colonna W e i dettagli: "0.42", "3.1", "12" (al massimo 5 caratteri con "~"), vuoto se < 0
+	string format_watts(double w, bool partial = false);
+	//? topo: watt CPU+GPU per i dettagli ("2.1+0.42", decimali per ciascuna parte); "+GPU" omesso se gpu_w < 0
+	//? (nessun client GPU); senza parte CPU (primo campione o illeggibile) "~0.80 GPU"
+	string format_watts_split(double cpu_w, double gpu_w);
+
+	//? topo: quota non attribuita ai processi e somma dei processi (W) dell'ultimo ciclo, -1 = assente
+	extern double pwr_system_w, pwr_procs_w;
+
 	//? Translation from process state char to explanative string
 	extern const std::unordered_map<char, string> proc_states;
 
@@ -485,6 +498,14 @@ namespace Proc {
 		bool collapsed{};
 		bool filtered{};
 		double gpu_p = -1;      //? topo: GPU% (Apple Silicon, opzione proc_gpu); -1 = nessun client GPU
+		//? topo: watt (Apple Silicon, opzione proc_power); -1 = nessun valore. pwr_w = somma delle parti note.
+		//? pwr_cpu_unknown: parte CPU illeggibile (processo di un altro utente), diverso dal primo campione senza
+		//? valore; in albero vale anche per il sottoalbero. pwr_partial: valore mostrato con "~" (manca una parte CPU)
+		double pwr_cpu_w = -1;
+		double pwr_gpu_w = -1;
+		double pwr_w = -1;
+		bool pwr_cpu_unknown{};
+		bool pwr_partial{};
 	};
 
 	//* Container for process info box
@@ -494,6 +515,7 @@ namespace Proc {
 		proc_info entry;
 		string elapsed, parent, status, io_read, io_write, memory;
 		string gpu_time; //? topo: tempo GPU accumulato (Apple Silicon), vuoto se raccolta spenta o 0
+		string pwr_split; //? topo: watt CPU+GPU (Apple Silicon), vuoto se raccolta spenta o senza valore
 		long long first_mem = -1;
 		deque<long long> cpu_percent;
 		deque<long long> mem_bytes;
@@ -515,6 +537,12 @@ namespace Proc {
 		std::reference_wrapper<proc_info> entry;
 		vector<tree_proc> children;
 	};
+
+	//? topo: completa pwr_w e pwr_partial dalle parti pwr_cpu_w e pwr_gpu_w
+	void combine_power(proc_info& p);
+	//? topo: somma i watt del figlio nel padre (albero chiuso o aggregato): -1 resta solo se nessuno ha valori;
+	//? il padre e' parziale se un processo del sottoalbero (lui compreso) ha la parte CPU illeggibile
+	void add_power(proc_info& parent, const proc_info& child);
 
 	//* Change priority (nice) of pid, returns true on success otherwise false
 	bool set_priority(pid_t pid, int priority);

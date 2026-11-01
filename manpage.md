@@ -113,6 +113,21 @@ The configuration file is _~/.config/topo/topo.conf_ (or _$XDG_CONFIG_HOME/topo/
     show GPU: (accumulated GPU time) for processes with at least 1 s: the sum of the Metal clients open now, so it
     can go down when a client closes.
 
+**proc_power** (default false)
+:   Show a W column in the process list (Apple Silicon only): CPU watts from the energy counter of each process
+    (proc_pid_rusage, ri_energy_nj, delta between cycles on a monotonic clock) plus the GPU power split among the
+    GPU clients by their GPU time in the interval. Without sudo the CPU part is readable only for your own processes; for the
+    others the cell is empty or shows the GPU part alone marked with ~. DRAM and ANE are not attributed. The header
+    row shows "system" (CPU + GPU power not attributed to processes: other users, kernel, work not tied to a
+    process; GPU power only when no client did GPU work) and "procs" (the attributed sum), from a proc box 88 columns wide in short form ("sys",
+    also at 65-70 and 73-74) and 109 in full form (94 and 115 with the Gpu% column too); when the process and SoC intervals
+    differ by more than 20% the last value is kept for at most 3 cycles. Costs about 5 ms of CPU per update (about 8 ms with no SoC box shown).
+
+**proc_sorting** = "power"
+:   Sort the process list by watts; it turns the collection on even with proc_power off. Processes without a value
+    stay at the bottom; in tree view a parent is marked ~ when a process of its subtree has no readable CPU part.
+    The process details show Watt: as CPU+GPU (no +GPU without GPU clients; "~0.80 GPU" without a CPU part).
+
 # FILES
 
 _~/.config/topo/topo.conf_

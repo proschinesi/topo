@@ -22,6 +22,8 @@ per-component power, CPU clusters, GPU frequency and temperature, DRAM bandwidth
 - **mem box**: DRAM bandwidth (`DRAM BW x GB/s`), or the estimate `DRAM BW ~x GB/s (est.)` where the direct counter
   is not available.
 - **proc box**: optional per-process `Gpu%` column and sorting `gpu`; `GPU:` time in the process details.
+  Optional per-process `W` column (CPU + GPU watts) and sorting `power`, with the power not attributed to processes
+  (`system`) in the header row.
 - `--dump-soc`: one SoC sample per line as JSON, with the data source of every value.
 
 Where a value is not available topo shows `—`, never a fake 0.
@@ -111,6 +113,8 @@ seconds (a build, a video, a game), so that the power cross-check described belo
 | Thermal state | `NSProcessInfo.thermalState` | nominal, fair, serious, critical |
 | Per-process GPU | IORegistry `AGXDeviceUserClient`, `accumulatedGPUTime` | delta between samples, option `proc_gpu` or sorting `gpu` |
 | Per-process GPU time | same clients, sum of `accumulatedGPUTime` per pid | only the clients open now: it can go down when a client closes |
+| Per-process CPU watts | `proc_pid_rusage(RUSAGE_INFO_V6)`, `ri_energy_nj` | delta between cycles; only your own processes without sudo |
+| Per-process GPU watts | GPU power split among the GPU clients by their GPU time in the interval | an attribution, not a measurement |
 | SoC total | CPU + GPU + ANE + DRAM | a sum, not a measurement |
 
 **macOS 27 and CLPC.** On macOS 27 Apple stopped updating the CPU/ANE/DRAM counters of the Energy Model (they stay
@@ -132,7 +136,9 @@ The state of the check is in `--dump-soc` (`clpc_check`: `pending`, `verified`, 
   PMP floor requests.
 - DRAM bandwidth: direct only where the kernel exposes the AMC counters (present on M2 Max, absent on M5 Pro);
   elsewhere it is an estimate.
-- Per-process power and energy: they require `powermetrics` and sudo, so they are not available.
+- Per-process power: the CPU part (kernel energy counter) is readable without sudo only for your own processes;
+  processes of root and other users have no CPU part (their cell is empty, or `~` with the GPU part only). The GPU
+  part is the GPU power split among the GPU clients by their GPU time, not a per-process meter. DRAM and ANE are not attributed to processes.
 - Memory and CPU of processes owned by other users (root, system daemons): not readable without sudo, as in btop.
 - SoC total: it is the sum of the parts; system power (SMC) also includes display, SSD, network and losses.
 
@@ -157,6 +163,7 @@ topo --dump-soc --count 5 --interval 500 # five samples, 500 ms apart
 | `pwr_graphs` | `true` | gpu | one-line graphs in the pwr box; `false` = numbers only |
 | `dram_bw_estimate` | `true` | mem | show the PMP estimate of DRAM bandwidth when the direct counter is missing |
 | `proc_gpu` | `false` | proc | `Gpu%` column in the proc box (about 2 ms of CPU per update); a GPU client that just appeared counts from the next cycle |
+| `proc_power` | `false` | proc | `W` column (CPU + GPU watts per process) and `system` power in the header row (about 5 ms of CPU per update) |
 
 `proc_sorting = "gpu"` (also with the arrow keys in the proc box) sorts by `Gpu%` and turns the collection on even
 with `proc_gpu` off (same ~2 ms per update); values arrive from the second cycle. Processes without GPU clients stay
@@ -164,6 +171,34 @@ at the bottom in both orders. The column needs a proc box at least 60 columns wi
 works without it. While the collection is on, the process details show `GPU:` (accumulated GPU time, same format as
 `Elapsed:`) after `Elapsed:` for processes with at least 1 s of GPU time: it is the sum of the Metal clients open now,
 so it leaves out the clients already closed and can go down.
+
+`proc_power = true` or `proc_sorting = "power"` adds a `W` column (Apple Silicon only): the CPU watts of each
+process (delta of its energy counter `ri_energy_nj` from `proc_pid_rusage` over a monotonic clock between two cycles)
+plus its GPU watts (GPU power of the SoC sample split among the GPU clients in proportion to their GPU time in the
+interval: an idle Apple GPU is almost powered off, so the average power already follows the active time). Values arrive from the second cycle; a reused pid (different start time) starts again from
+zero. Without sudo the CPU part exists only for your own processes: for the others the cell is empty, or shows the
+GPU part alone marked `~` (`~0.42`). If the GPU clients cannot be read in a cycle, the GPU part is missing rather
+than 0. Sorting `power` keeps the processes without a value at the bottom in both orders; in tree view children add
+up into a collapsed or aggregated parent, marked `~` when a live process of the subtree has no readable CPU part.
+The process details show `Watt:` as CPU+GPU (`2.1+0.42`); `+GPU` is left out for processes without GPU clients, and
+without a CPU part (first sample or not readable) it shows the GPU part alone as `~0.80 GPU`.
+
+The header row shows `system x W · procs y W`: `procs` is what the column attributes, `system` is the rest of the
+CPU + GPU power of the SoC (CPU power minus the readable processes, GPU power minus the attributed part, each at least
+0). `system` therefore contains the processes of other users, the kernel and the work not tied to a process; the GPU
+power ends up there only when no client did GPU work in the interval. It is not spread over the unreadable processes. It is shown only while the CPU power of the SoC
+is available, from the second cycle. When the process interval and the SoC sample interval differ by more than 20%
+(a refresh outside the timer) the last valid value is kept for at most 3 cycles; when the GPU clients could not be
+read only its CPU part counts. It lives in the free space of the `Command:` label, with three forms by width (process list, not tree
+view; values with two decimals): `Cmd: sys x W` from a proc box 88 columns wide (also at 65-70 and 73-74), `system x W` from
+95 and the full form from 109; with the `Gpu%` column too, 94, 101 and 115. In the default layout (`cpu mem net proc`)
+the proc box is about half of the terminal. Narrower than that it is not shown anywhere else.
+
+The collection also turns on the GPU client reading (not the `Gpu%` column) and, with the cpu, gpu, pwr and mem boxes
+all hidden, takes the SoC sample itself. `proc_pid_rusage` is not even tried for processes of other users (when not
+root) or whose task info could not be read. Cost, measured on an M2 Max with ~800 processes (120 s, two instances per case): about 5 ms of CPU per update (~0.5% of a core at 1000 ms), about 8 ms with no SoC box shown. The column needs a proc box at least 60 columns wide;
+the space comes from the command column (down to 6 characters) and then from the program name (down to 8). When there
+is room for only one of `Gpu%` and `W`, `W` wins with sorting `power`, `Gpu%` otherwise.
 
 The PMP histograms (estimates) are sampled only when something displays them.
 

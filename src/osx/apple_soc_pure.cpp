@@ -173,6 +173,50 @@ namespace AppleSoc::Pure {
 		return out;
 	}
 
+	//? ---- potenza per processo ----
+	auto energy_delta_watts(uint64_t prev_nj, uint64_t cur_nj, uint64_t dt_ns) -> std::optional<double> {
+		if (dt_ns == 0 or cur_nj < prev_nj) return std::nullopt;
+		return static_cast<double>(cur_nj - prev_nj) / static_cast<double>(dt_ns); //? nJ/ns = W
+	}
+
+	auto ProcEnergyTracker::feed(const std::vector<ProcEnergyReading>& readings, uint64_t now_ns) -> std::vector<std::optional<double>> {
+		std::vector<std::optional<double>> out(readings.size());
+		const uint64_t gen = ++gen_;
+		for (size_t i = 0; i < readings.size(); i++) {
+			const auto& r = readings[i];
+			auto [it, added] = prev_.try_emplace(r.pid);
+			auto& p = it->second;
+			p.gen = gen;
+			if (not added and p.start == r.start) {
+				if (now_ns == p.t_ns) continue; //? stesso istante: si tiene la base
+				if (now_ns > p.t_ns) out[i] = energy_delta_watts(p.energy_nj, r.energy_nj, now_ns - p.t_ns);
+			}
+			p.start = r.start;
+			p.energy_nj = r.energy_nj;
+			p.t_ns = now_ns;
+		}
+		std::erase_if(prev_, [gen](const auto& kv) { return kv.second.gen != gen; });
+		return out;
+	}
+
+	auto gpu_power_by_pid(std::optional<double> gpu_w, const std::map<int, double>& usage) -> std::optional<std::map<int, double>> {
+		if (not gpu_w or usage.empty()) return std::nullopt;
+		double sum = 0;
+		for (const auto& [pid, u] : usage) sum += std::max(u, 0.0);
+		std::map<int, double> out;
+		for (const auto& [pid, u] : usage)
+			out[pid] = sum > 0 ? std::max(*gpu_w, 0.0) * std::max(u, 0.0) / sum : 0.0;
+		return out;
+	}
+
+	auto unattributed_power(std::optional<double> cpu_total_w, double cpu_procs_w,
+		std::optional<double> gpu_total_w, double gpu_procs_w) -> std::optional<double> {
+		if (not cpu_total_w) return std::nullopt;
+		double w = std::max(*cpu_total_w - cpu_procs_w, 0.0);
+		if (gpu_total_w) w += std::max(*gpu_total_w - gpu_procs_w, 0.0);
+		return w;
+	}
+
 	auto parse_creator_pid(std::string_view creator) -> std::optional<int> {
 		if (not creator.starts_with("pid ")) return std::nullopt;
 		creator.remove_prefix(4);

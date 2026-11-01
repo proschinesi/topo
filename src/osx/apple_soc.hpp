@@ -33,6 +33,7 @@ tab-size = 4
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -184,6 +185,40 @@ namespace AppleSoc {
 		auto gpu_ns_by_pid(const std::vector<GpuClient>& clients) -> std::map<int, uint64_t>;
 		//? "pid 402, WindowServer" -> 402
 		auto parse_creator_pid(std::string_view creator) -> std::optional<int>;
+
+		//? ---- potenza per processo (colonna W) ----
+		//? topo: lettura di proc_pid_rusage(RUSAGE_INFO_V6) di un processo leggibile: inizio del processo
+		//? (ri_proc_start_abstime, distingue i pid riciclati) ed energia CPU cumulativa (ri_energy_nj)
+		struct ProcEnergyReading {
+			int pid = -1;
+			uint64_t start = 0;
+			uint64_t energy_nj = 0;
+		};
+		//? watt da un delta di energia in nJ su dt_ns: nullopt se l'intervallo e' nullo o il contatore cala
+		auto energy_delta_watts(uint64_t prev_nj, uint64_t cur_nj, uint64_t dt_ns) -> std::optional<double>;
+		//? Watt CPU per processo a delta tra due letture, chiave (pid, inizio del processo). Il primo campione
+		//? di un processo (o di un pid riciclato) fa solo da base; i processi non piu' letti escono dallo stato.
+		//? now_ns e' un orologio monotono. Stesso istante: nessun valore e base invariata. Orologio che torna
+		//? indietro o contatore che cala: nessun valore, nuova base dalla lettura.
+		class ProcEnergyTracker {
+		public:
+			//? risultato parallelo a readings (nullopt = nessun valore in questo ciclo)
+			auto feed(const std::vector<ProcEnergyReading>& readings, uint64_t now_ns) -> std::vector<std::optional<double>>;
+			auto size() const -> size_t { return prev_.size(); }
+		private:
+			struct Prev { uint64_t start = 0, energy_nj = 0, t_ns = 0, gen = 0; };
+			std::unordered_map<int, Prev> prev_; //? riusata tra i cicli: i pid non letti escono per generazione
+			uint64_t gen_ = 0;
+		};
+		//? Potenza GPU per processo: gpu_w * uso / somma degli usi (a riposo la GPU Apple e' quasi spenta, quindi
+		//? la potenza media e' gia' proporzionale al tempo attivo: si divide tra i client che hanno lavorato).
+		//? Somma nulla: 0 W a tutti (tutto alla quota system). nullopt se la potenza GPU manca o usage e' vuota
+		//? (lettura dei client fallita o primo ciclo).
+		auto gpu_power_by_pid(std::optional<double> gpu_w, const std::map<int, double>& usage) -> std::optional<std::map<int, double>>;
+		//? Quota non attribuita ai processi: (CPU totale - somma CPU dei processi) + (GPU totale - somma GPU
+		//? attribuita), ogni parte >= 0; la parte GPU conta solo se nota. nullopt senza CPU totale.
+		auto unattributed_power(std::optional<double> cpu_total_w, double cpu_procs_w,
+			std::optional<double> gpu_total_w, double gpu_procs_w) -> std::optional<double>;
 
 		//? ---- energia -> potenza ----
 		//? delta di energia nell'unita' indicata (mJ, uJ/µJ, nJ) su seconds secondi -> watt.

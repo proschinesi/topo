@@ -29,6 +29,9 @@ tab-size = 4
 #include "btop_config.hpp"
 #include "btop_shared.hpp"
 #include "btop_tools.hpp"
+#ifdef __APPLE__
+#include "osx/apple_soc.hpp" //? topo: power_active() solo con AppleSoc disponibile
+#endif
 
 namespace fs = std::filesystem;
 namespace rng = std::ranges;
@@ -98,7 +101,7 @@ namespace Gpu {
 #endif
 
 namespace Proc {
-//? topo: ordinamento "gpu": i processi senza client GPU (-1) restano sempre in fondo, in entrambi i versi
+//? topo: ordinamenti "gpu" e "power": i processi senza valore (-1) restano sempre in fondo, in entrambi i versi
 static bool gpu_before(double a, double b, bool reverse) {
 	if ((a < 0) != (b < 0)) return b < 0;
 	return reverse ? a < b : a > b;
@@ -107,6 +110,53 @@ static bool gpu_before(double a, double b, bool reverse) {
 //? topo: raccolta (e colonna) Gpu% attiva con l'opzione proc_gpu o con l'ordinamento "gpu"
 bool gpu_active() {
 	return Config::getB("proc_gpu") or Config::getS("proc_sorting") == "gpu";
+}
+
+//? topo: raccolta (e colonna) W attiva con l'opzione proc_power o con l'ordinamento "power", solo con i dati
+//? del SoC Apple Silicon (su Intel niente colonna di zeri finti)
+bool power_active() {
+#ifdef __APPLE__
+	if (not AppleSoc::available()) return false;
+#endif
+	return Config::getB("proc_power") or Config::getS("proc_sorting") == "power";
+}
+
+double pwr_system_w = -1, pwr_procs_w = -1;
+
+//? decimali per i watt: 2 sotto 1 W, 1 sotto 10 W, 0 sopra
+static int watts_decimals(double w) {
+	return w < 1 ? 2 : w < 10 ? 1 : 0;
+}
+
+string format_watts(double w, bool partial) {
+	if (w < 0) return "";
+	const string v = fmt::format("{:.{}f}", w, watts_decimals(w));
+	return partial ? '~' + v : v;
+}
+
+string format_watts_split(double cpu_w, double gpu_w) {
+	if (cpu_w < 0) return gpu_w >= 0 ? format_watts(gpu_w, true) + " GPU" : "";
+	return gpu_w >= 0 ? format_watts(cpu_w) + '+' + format_watts(gpu_w) : format_watts(cpu_w);
+}
+
+void combine_power(proc_info& p) {
+	if (p.pwr_cpu_w >= 0) {
+		p.pwr_w = p.pwr_cpu_w + std::max(p.pwr_gpu_w, 0.0);
+		p.pwr_partial = false;
+	}
+	else {
+		//? senza parte CPU si mostra solo una GPU > 0, marcata come parziale
+		p.pwr_partial = p.pwr_gpu_w > 0;
+		p.pwr_w = p.pwr_partial ? p.pwr_gpu_w : -1;
+	}
+}
+
+void add_power(proc_info& parent, const proc_info& child) {
+	parent.pwr_cpu_unknown = parent.pwr_cpu_unknown or child.pwr_cpu_unknown;
+	if (child.pwr_cpu_w >= 0) parent.pwr_cpu_w = std::max(parent.pwr_cpu_w, 0.0) + child.pwr_cpu_w;
+	if (child.pwr_gpu_w >= 0) parent.pwr_gpu_w = std::max(parent.pwr_gpu_w, 0.0) + child.pwr_gpu_w;
+	if (child.pwr_w >= 0) parent.pwr_w = std::max(parent.pwr_w, 0.0) + child.pwr_w;
+	parent.pwr_partial = parent.pwr_w >= 0 and (parent.pwr_partial or child.pwr_partial or parent.pwr_cpu_unknown);
 }
 
 bool set_priority(pid_t pid, int priority) {
@@ -128,6 +178,7 @@ bool set_priority(pid_t pid, int priority) {
 			case 6: rng::stable_sort(proc_vec, rng::less{}, &proc_info::cpu_p);		break;
 			case 7: rng::stable_sort(proc_vec, rng::less{}, &proc_info::cpu_c);		break;
 			case 8: rng::stable_sort(proc_vec, [](const auto& a, const auto& b) { return gpu_before(a.gpu_p, b.gpu_p, true); });	break; //? topo: "gpu"
+			case 9: rng::stable_sort(proc_vec, [](const auto& a, const auto& b) { return gpu_before(a.pwr_w, b.pwr_w, true); });	break; //? topo: "power"
 			}
 		}
 		else {
@@ -141,6 +192,7 @@ bool set_priority(pid_t pid, int priority) {
 			case 6: rng::stable_sort(proc_vec, rng::greater{}, &proc_info::cpu_p);   	break;
 			case 7: rng::stable_sort(proc_vec, rng::greater{}, &proc_info::cpu_c);   	break;
 			case 8: rng::stable_sort(proc_vec, [](const auto& a, const auto& b) { return gpu_before(a.gpu_p, b.gpu_p, false); });	break; //? topo: "gpu"
+			case 9: rng::stable_sort(proc_vec, [](const auto& a, const auto& b) { return gpu_before(a.pwr_w, b.pwr_w, false); });	break; //? topo: "power"
 			}
 		}
 
@@ -171,6 +223,7 @@ bool set_priority(pid_t pid, int priority) {
 				case 6: rng::stable_sort(proc_vec, [](const auto& a, const auto& b) { return a.entry.get().cpu_p < b.entry.get().cpu_p; });	break;
 				case 7: rng::stable_sort(proc_vec, [](const auto& a, const auto& b) { return a.entry.get().cpu_c < b.entry.get().cpu_c; });	break;
 				case 8: rng::stable_sort(proc_vec, [](const auto& a, const auto& b) { return gpu_before(a.entry.get().gpu_p, b.entry.get().gpu_p, true); });	break; //? topo: "gpu"
+				case 9: rng::stable_sort(proc_vec, [](const auto& a, const auto& b) { return gpu_before(a.entry.get().pwr_w, b.entry.get().pwr_w, true); });	break; //? topo: "power"
 				}
 			}
 			else {
@@ -180,6 +233,7 @@ bool set_priority(pid_t pid, int priority) {
 				case 6: rng::stable_sort(proc_vec, [](const auto& a, const auto& b) { return a.entry.get().cpu_p > b.entry.get().cpu_p; });	break;
 				case 7: rng::stable_sort(proc_vec, [](const auto& a, const auto& b) { return a.entry.get().cpu_c > b.entry.get().cpu_c; });	break;
 				case 8: rng::stable_sort(proc_vec, [](const auto& a, const auto& b) { return gpu_before(a.entry.get().gpu_p, b.entry.get().gpu_p, false); });	break; //? topo: "gpu"
+				case 9: rng::stable_sort(proc_vec, [](const auto& a, const auto& b) { return gpu_before(a.entry.get().pwr_w, b.entry.get().pwr_w, false); });	break; //? topo: "power"
 				}
 			}
 		}
@@ -265,6 +319,7 @@ bool set_priority(pid_t pid, int priority) {
 					cur_proc.mem += p.mem;
 					cur_proc.threads += p.threads;
 					if (p.gpu_p >= 0) cur_proc.gpu_p = std::max(cur_proc.gpu_p, 0.0) + p.gpu_p; //? topo: -1 resta solo se nessuno ha client
+					add_power(cur_proc, p); //? topo: watt (colonna W)
 				}
 				filter_found++;
 				p.filtered = true;
@@ -275,6 +330,7 @@ bool set_priority(pid_t pid, int priority) {
 				cur_proc.mem += p.mem;
 				cur_proc.threads += p.threads;
 				if (p.gpu_p >= 0) cur_proc.gpu_p = std::max(cur_proc.gpu_p, 0.0) + p.gpu_p; //? topo: -1 resta solo se nessuno ha client
+				add_power(cur_proc, p); //? topo: watt (colonna W)
 			}
 		}
 	}
@@ -366,6 +422,7 @@ const vector<string> Proc::sort_vector = {
 	"cpu lazy",
 #ifdef __APPLE__
 	"gpu", //? topo: GPU% per processo (Apple Silicon), indice 8
+	"power", //? topo: watt CPU+GPU per processo (Apple Silicon), indice 9
 #endif
 };
 

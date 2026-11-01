@@ -131,6 +131,7 @@ namespace Config {
 		{"proc_sorting",		"#* Processes sorting, \"pid\" \"program\" \"arguments\" \"threads\" \"user\" \"memory\" \"cpu lazy\" \"cpu direct\",\n"
 #ifdef __APPLE__
 								"#* \"gpu\" (Apple Silicon, shows the Gpu% column even with proc_gpu off),\n"
+								"#* \"power\" (Apple Silicon, CPU+GPU watts, shows the W column even with proc_power off),\n"
 #endif
 								"#* \"cpu lazy\" sorts top process over time (easier to follow), \"cpu direct\" updates top process directly."},
 
@@ -271,6 +272,9 @@ namespace Config {
 		{"pwr_graphs",			"#* (Apple Silicon) Show one-line graphs in the pwr box, False for numbers only (current and session max)."},
 		{"proc_gpu",			"#* (Apple Silicon) Show a Gpu% column in the process list, from the per-process GPU time of the Metal clients\n"
 								"#* (IORegistry AGXDeviceUserClient, no sudo needed). Costs about 2 ms of CPU per update (~0.2% of a core at 1000 ms)."},
+		{"proc_power",			"#* (Apple Silicon) Show a W column in the process list: CPU watts from the per-process energy counter\n"
+								"#* (proc_pid_rusage, only for your own processes without sudo) plus a share of the GPU power by GPU time.\n"
+								"#* Power not attributed to processes is shown as \"system\" in the header row. Costs about 5 ms of CPU per update (8 ms with no SoC box shown)."},
 	#endif
 	#ifdef GPU_SUPPORT
 
@@ -401,6 +405,7 @@ namespace Config {
 		{"dram_bw_estimate", true},
 		{"pwr_graphs", true},
 		{"proc_gpu", false},
+		{"proc_power", false},
 	#endif
 		{"disable_mouse", false},
 	};

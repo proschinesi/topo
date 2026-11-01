@@ -1866,6 +1866,7 @@ namespace Proc {
 	Draw::Graph detailed_mem_graph;
 	int user_size, thread_size, prog_size, cmd_size, tree_size;
 	int gpu_size = 0; //? topo: colonna Gpu% (opzione proc_gpu), 0 = assente
+	int pwr_size = 0; //? topo: colonna W (opzione proc_power), 0 = assente
 	int dgraph_x, dgraph_width, d_width, d_x, d_y;
 	bool previous_proc_banner_state = false;
 	atomic<bool> resized (false);
@@ -2061,14 +2062,28 @@ namespace Proc {
 				cmd_size += 5;
 				tree_size += 5;
 			}
-			//? topo: colonna Gpu% (5 + spazio), presa dal comando o dal nome del programma
-			gpu_size = 0;
+			//? topo: colonne Gpu% e W (5 + spazio ciascuna), prese dal comando fino a 6 caratteri e poi dal nome del
+			//? programma fino a 8. Lo spazio disponibile cresce con la larghezza (salvo il salto di btop a 75, dove
+			//? resta sufficiente per entrambe), cosi' una colonna non compare e scompare allargando il terminale.
+			//? Se non c'e' posto per entrambe, la precedenza va a W con l'ordinamento "power", altrimenti a Gpu%.
+			gpu_size = pwr_size = 0;
 		#ifdef __APPLE__
-			if (gpu_active() and width >= 60) {
-				gpu_size = 5;
-				if (cmd_size > 6) cmd_size -= gpu_size + 1;
-				else prog_size -= gpu_size + 1;
-				tree_size -= gpu_size + 1;
+			if (width >= 60) {
+				int free_cmd = max(0, cmd_size - 6), free_prog = max(0, prog_size - 8);
+				auto take = [&](int& size) {
+					if (free_cmd + free_prog < 6) return;
+					const int from_cmd = min(6, free_cmd);
+					free_cmd -= from_cmd;
+					cmd_size -= from_cmd;
+					free_prog -= 6 - from_cmd;
+					prog_size -= 6 - from_cmd;
+					tree_size -= 6;
+					size = 5;
+				};
+				const bool pwr_first = Config::getS("proc_sorting") == "power";
+				if (pwr_first and power_active()) take(pwr_size);
+				if (gpu_active()) take(gpu_size);
+				if (not pwr_first and power_active()) take(pwr_size);
 			}
 		#endif
 
@@ -2128,19 +2143,23 @@ namespace Proc {
 
 				//? Labels
 				//? topo: voce GPU: dopo Elapsed: solo con tempo GPU (fino a 9 voci, le finali cadono per prime)
+				//? topo: voce Watt: dopo GPU: solo con valore dei watt (fino a 10 voci)
 				const int gi = detailed.gpu_time.empty() ? 0 : 1;
+				const int wi = detailed.pwr_split.empty() ? 0 : 1;
+				const int ex = gi + wi;
 				const int item_fit = floor((double)(d_width - 2) / 10);
-				const int item_width = floor((double)(d_width - 2) / min(item_fit, 8 + gi));
+				const int item_width = floor((double)(d_width - 2) / min(item_fit, 8 + ex));
 				out += Mv::to(d_y + 1, d_x + 1) + Fx::b + Theme::c("title")
 										+ cjust("Status:", item_width)
 										+ cjust("Elapsed:", item_width);
 				if (gi and item_fit >= 3) out += cjust("GPU:", item_width);
-				if (item_fit >= 3 + gi) out += cjust("IO/R:", item_width);
-				if (item_fit >= 4 + gi) out += cjust("IO/W:", item_width);
-				if (item_fit >= 5 + gi) out += cjust("Parent:", item_width);
-				if (item_fit >= 6 + gi) out += cjust("User:", item_width);
-				if (item_fit >= 7 + gi) out += cjust("Threads:", item_width);
-				if (item_fit >= 8 + gi) out += cjust("Nice:", item_width);
+				if (wi and item_fit >= 3 + gi) out += cjust("Watt:", item_width);
+				if (item_fit >= 3 + ex) out += cjust("IO/R:", item_width);
+				if (item_fit >= 4 + ex) out += cjust("IO/W:", item_width);
+				if (item_fit >= 5 + ex) out += cjust("Parent:", item_width);
+				if (item_fit >= 6 + ex) out += cjust("User:", item_width);
+				if (item_fit >= 7 + ex) out += cjust("Threads:", item_width);
+				if (item_fit >= 8 + ex) out += cjust("Nice:", item_width);
 
 
 				//? Command line
@@ -2253,6 +2272,7 @@ namespace Proc {
 			out += (thread_size > 0 ? Mv::l(4) + "Threads: " : "")
 					+ ljust("User:", user_size) + ' '
 					+ (gpu_size > 0 ? rjust("Gpu%", gpu_size) + ' ' : "")
+					+ (pwr_size > 0 ? rjust("W", pwr_size) + ' ' : "")
 					+ rjust((mem_bytes ? "MemB" : "Mem%"), 5) + ' '
 					+ rjust("Cpu%", (show_graphs ? 10 : 5)) + Fx::ub;
 		}
@@ -2261,9 +2281,11 @@ namespace Proc {
 		//? Draw details box if shown
 		if (show_detailed) {
 			bool alive = detailed.status != "Dead";
-			const int gi = detailed.gpu_time.empty() ? 0 : 1; //? topo: voce GPU: (vedi etichette)
+			const int gi = detailed.gpu_time.empty() ? 0 : 1; //? topo: voci GPU: e Watt: (vedi etichette)
+			const int wi = detailed.pwr_split.empty() ? 0 : 1;
+			const int ex = gi + wi;
 			const int item_fit = floor((double)(d_width - 2) / 10);
-			const int item_width = floor((double)(d_width - 2) / min(item_fit, 8 + gi));
+			const int item_width = floor((double)(d_width - 2) / min(item_fit, 8 + ex));
 
 			//? Graph part of box
 			fmt::format_to(std::back_inserter(out), "{move}{unbold}{graph}{move}{fg_color}{bold}{cpu_str}%",
@@ -2279,12 +2301,13 @@ namespace Proc {
 									+ cjust(detailed.status, item_width) + Theme::c("main_fg")
 									+ cjust(detailed.elapsed, item_width);
 			if (gi and item_fit >= 3) out += cjust(detailed.gpu_time, item_width);
-			if (item_fit >= 3 + gi) out += cjust(detailed.io_read, item_width);
-			if (item_fit >= 4 + gi) out += cjust(detailed.io_write, item_width);
-			if (item_fit >= 5 + gi) out += cjust(detailed.parent, item_width, true);
-			if (item_fit >= 6 + gi) out += cjust(detailed.entry.user, item_width, true);
-			if (item_fit >= 7 + gi) out += cjust(to_string(detailed.entry.threads), item_width);
-			if (item_fit >= 8 + gi) out += cjust(to_string(detailed.entry.p_nice), item_width);
+			if (wi and item_fit >= 3 + gi) out += cjust(detailed.pwr_split, item_width);
+			if (item_fit >= 3 + ex) out += cjust(detailed.io_read, item_width);
+			if (item_fit >= 4 + ex) out += cjust(detailed.io_write, item_width);
+			if (item_fit >= 5 + ex) out += cjust(detailed.parent, item_width, true);
+			if (item_fit >= 6 + ex) out += cjust(detailed.entry.user, item_width, true);
+			if (item_fit >= 7 + ex) out += cjust(to_string(detailed.entry.threads), item_width);
+			if (item_fit >= 8 + ex) out += cjust(to_string(detailed.entry.p_nice), item_width);
 
 
 			const double mem_p = detailed.mem_bytes.back() * 100.0 / totalMem;
@@ -2429,6 +2452,7 @@ namespace Proc {
 			out += (thread_size > 0 ? t_color + rjust(proc_threads_string, thread_size) + ' ' + end : "" )
 				+ g_color + ljust((cmp_greater(p.user.size(), user_size) ? p.user.substr(0, user_size - 1) + '+' : p.user), user_size) + ' '
 				+ (gpu_size > 0 ? c_color + rjust(p.gpu_p < 0 ? string("") : p.gpu_p < 10 ? fmt::format("{:.1f}", p.gpu_p) : fmt::format("{:.0f}", p.gpu_p), gpu_size) + end + ' ' : "")
+				+ (pwr_size > 0 ? c_color + rjust(format_watts(p.pwr_w, p.pwr_partial), pwr_size) + end + ' ' : "")
 				+ m_color + rjust(mem_str, 5) + end + ' '
 				+ (is_selected or is_followed ? "" : Theme::c("inactive_fg")) + (show_graphs ? graph_bg * 5: "")
 				+ (p_graphs.contains(p.pid) ? Mv::l(5) + c_color + p_graphs.at(p.pid)({(p.cpu_p >= 0.1 and p.cpu_p < 5 ? 5ll : (long long)round(p.cpu_p))}, data_same) : "") + end + ' '
@@ -2468,6 +2492,32 @@ namespace Proc {
 		string loc_clear = Symbols::h_line * max((size_t)0, 9 - location.size());
 		out += Mv::to(y + height - 1, x+width - 3 - max(9, (int)location.size())) + Fx::ub + Theme::c("proc_box") + loc_clear
 			+ Symbols::title_left_down + Theme::c("title") + Fx::b + location + Fx::ub + Theme::c("proc_box") + Symbols::title_right_down;
+
+	#ifdef __APPLE__
+		//? topo: quota "system" (potenza CPU+GPU non attribuita ai processi) nella riga delle intestazioni, a destra
+		//? nello spazio di Command:/Tree:. E' una riga fissa fuori dalla lista: niente processo finto da selezionare,
+		//? filtrare o segnalare. Si riscrive a ogni ciclo; forma lunga, corta o niente secondo lo spazio.
+		if (power_active()) {
+			const int hx = proc_tree ? x + 1 : x + 11 + prog_size;
+			//? l'etichetta "Threads:" parte 4 colonne dentro lo spazio: si lascia libera, con uno spazio prima
+			const int hw = (proc_tree ? tree_size : cmd_size) - (thread_size > 0 ? 5 : 0);
+			string label = proc_tree ? "Tree:" : "Command:";
+			if (hw >= (int)label.size()) {
+				string text;
+				if (pwr_system_w >= 0) {
+					const string sys = format_watts(pwr_system_w) + 'W';
+					const array<string, 3> forms = {"system " + sys + " · procs " + format_watts(pwr_procs_w) + 'W', "system " + sys, "sys " + sys};
+					for (const string& l : {label, proc_tree ? label : string("Cmd:")}) {
+						for (const auto& f : forms)
+							if ((int)(ulen(l) + 1 + ulen(f)) <= hw) { text = f; break; }
+						if (not text.empty()) { label = l; break; }
+					}
+				}
+				out += Mv::to(y + 1, hx) + Theme::c("title") + Fx::b + ljust(label, hw - ulen(text)) + Fx::ub
+					+ Theme::c("main_fg") + text;
+			}
+		}
+	#endif
 
 		//? Clear out left over graphs from dead processes at a regular interval
 		if (not data_same and ++counter >= 100) {

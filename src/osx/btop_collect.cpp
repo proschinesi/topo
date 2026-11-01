@@ -1589,6 +1589,17 @@ namespace Proc {
 			detailed.gpu_time = std::move(gpu_time);
 		}
 
+		//? topo: watt CPU+GPU del processo ("+GPU" solo con client GPU, "~x GPU" senza parte CPU);
+		//? voce assente senza valore
+		{
+			const auto& e = detailed.entry;
+			string pwr_split;
+			if (power_active() and e.pwr_w >= 0)
+				pwr_split = format_watts_split(e.pwr_cpu_w, e.gpu_p >= 0 ? e.pwr_gpu_w : -1);
+			if (pwr_split.empty() != detailed.pwr_split.empty()) redraw = true;
+			detailed.pwr_split = std::move(pwr_split);
+		}
+
 		//? Get parent process name
 		if (detailed.parent.empty()) {
 			auto p_entry = rng::find(procs, detailed.entry.ppid, &proc_info::pid);
@@ -1671,6 +1682,8 @@ namespace Proc {
 			found.clear();
 			size_t size = 0;
 			const auto timeNow = time_micros();
+			const bool pwr_on = power_active(); //? topo: watt per processo (vedi sotto)
+			static const uid_t my_euid = geteuid();
 
 			if (sysctl(mib, 4, nullptr, &size, nullptr, 0) < 0 || size == 0) {
 				Logger::error("Unable to get size of kproc_infos");
@@ -1753,7 +1766,11 @@ namespace Proc {
 
 					//? Get threads, mem and cpu usage
 					struct proc_taskinfo pti{};
-					if (sizeof(pti) == proc_pidinfo(new_proc.pid, PROC_PIDTASKINFO, 0, &pti, sizeof(pti))) {
+					const bool pti_ok = sizeof(pti) == proc_pidinfo(new_proc.pid, PROC_PIDTASKINFO, 0, &pti, sizeof(pti));
+					//? topo: parte CPU dei watt illeggibile senza provare proc_pid_rusage (darebbe EPERM): task info
+					//? negata o processo di un altro utente quando non si e' root
+					new_proc.pwr_cpu_unknown = pwr_on and (not pti_ok or (my_euid != 0 and kproc.kp_eproc.e_ucred.cr_uid != my_euid));
+					if (pti_ok) {
 						new_proc.threads = pti.pti_threadnum;
 						new_proc.mem = pti.pti_resident_size;
 						cpu_t = pti.pti_total_user + pti.pti_total_system;
@@ -1811,12 +1828,16 @@ namespace Proc {
 				//? A ogni accensione il tracker riparte da zero: il primo ciclo fa solo da base, i valori arrivano dal
 				//? secondo (~2 cicli); allo spegnimento si azzera tutto, cosi' riaccendendo non restano valori vecchi
 				//? ne' una media su tutto il periodo spento.
+				//? Gira anche con i soli watt per processo attivi (serve la quota di tempo GPU), senza colonna Gpu%.
+				//? orologio monotono (lo stesso di mach_absolute_time del campione SoC) per i tracker GPU ed energia
+				const uint64_t now_ns = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
 				static AppleSoc::Pure::GpuTimeTracker gpu_tracker;
 				static bool gpu_was_active = false;
-				if (gpu_active()) {
+				std::map<int, double> usage;
+				if (gpu_active() or pwr_on) {
 					gpu_was_active = true;
 					const auto clients = AppleSoc::gpu_clients();
-					const auto usage = gpu_tracker.feed(clients, static_cast<uint64_t>(timeNow) * 1000);
+					usage = gpu_tracker.feed(clients, now_ns);
 					//? stessa lettura per il tempo GPU dei dettagli; una lettura vuota (fallita) tiene la precedente
 					if (not clients.empty()) gpu_ns_pid = AppleSoc::Pure::gpu_ns_by_pid(clients);
 					for (auto& p : current_procs) {
@@ -1829,6 +1850,93 @@ namespace Proc {
 					gpu_tracker = {};
 					gpu_ns_pid.clear();
 					for (auto& p : current_procs) p.gpu_p = -1;
+				}
+
+				//? topo: watt per processo (opzione proc_power o ordinamento "power", spenta di default).
+				//? CPU: delta di ri_energy_nj (proc_pid_rusage) su un orologio monotono tra due cicli; senza sudo si leggono
+				//? solo i processi dell'utente (gli altri danno EPERM: parte CPU sconosciuta). GPU: potenza GPU del campione
+				//? SoC x quota di tempo GPU del processo. Il campione SoC si chiede qui anche con i box cpu/gpu/pwr/mem nascosti
+				//? (con un box visibile si riusa quello del ciclo). Quello che resta della potenza CPU+GPU totale e' la
+				//? quota "system" della riga delle intestazioni. Allo spegnimento si azzera tutto come per la GPU.
+				static AppleSoc::Pure::ProcEnergyTracker energy_tracker;
+				static bool pwr_was_active = false;
+				static uint64_t pwr_last_ns = 0;
+				static vector<AppleSoc::Pure::ProcEnergyReading> readings;
+				static vector<size_t> reading_idx;
+				if (pwr_on) {
+					pwr_was_active = true;
+					const auto& soc = soc_collect(std::max<uint64_t>(50, Config::getI("update_ms") / 2));
+					readings.clear();
+					reading_idx.clear();
+					for (size_t i = 0; i < current_procs.size(); i++) {
+						auto& p = current_procs[i];
+						p.pwr_cpu_w = p.pwr_gpu_w = p.pwr_w = -1;
+						p.pwr_partial = false;
+						if (p.state == 'X') {
+							p.pwr_cpu_unknown = false;
+							continue;
+						}
+						if (p.pwr_cpu_unknown) continue;
+						rusage_info_v6 ri{};
+						if (proc_pid_rusage(static_cast<int>(p.pid), RUSAGE_INFO_V6, reinterpret_cast<rusage_info_t*>(&ri)) == 0) {
+							readings.push_back({static_cast<int>(p.pid), ri.ri_proc_start_abstime, ri.ri_energy_nj});
+							reading_idx.push_back(i);
+						}
+						else p.pwr_cpu_unknown = true;
+					}
+					const auto cpu_w = energy_tracker.feed(readings, now_ns);
+					double cpu_sum = 0;
+					size_t cpu_count = 0;
+					for (size_t k = 0; k < readings.size(); k++) {
+						if (not cpu_w[k]) continue;
+						current_procs[reading_idx[k]].pwr_cpu_w = *cpu_w[k];
+						cpu_sum += *cpu_w[k];
+						cpu_count++;
+					}
+					//? GPU: potenza del campione x quota di tempo GPU; senza lettura dei client (fallita o primo ciclo)
+					//? la parte GPU resta sconosciuta e la quota system salta la sua parte GPU
+					const auto gpu_w = AppleSoc::Pure::gpu_power_by_pid(soc.valid ? soc.gpu_power_w : std::nullopt, usage);
+					double gpu_sum = 0;
+					for (auto& p : current_procs) {
+						if (gpu_w and p.state != 'X') {
+							const auto it = gpu_w->find(static_cast<int>(p.pid));
+							p.pwr_gpu_w = it != gpu_w->end() ? it->second : 0.0;
+							gpu_sum += p.pwr_gpu_w;
+						}
+						combine_power(p);
+					}
+					//? quota system solo se confrontabile: almeno un valore CPU (al primo ciclo sarebbe tutto il totale) e
+					//? intervallo dei processi entro il 20% di quello del campione SoC (raccolte fuori dal timer)
+					const double proc_dt = pwr_last_ns != 0 and now_ns > pwr_last_ns ? static_cast<double>(now_ns - pwr_last_ns) / 1e9 : 0.0;
+					const bool comparable = cpu_count > 0 and soc.valid and soc.interval_s > 0 and proc_dt > 0
+						and std::abs(proc_dt - soc.interval_s) <= 0.2 * soc.interval_s;
+					const bool skewed = cpu_count > 0 and soc.valid and soc.interval_s > 0 and proc_dt > 0 and not comparable;
+					const auto system = comparable
+						? AppleSoc::Pure::unattributed_power(soc.cpu_power_w, cpu_sum, gpu_w ? soc.gpu_power_w : std::nullopt, gpu_sum)
+						: std::nullopt;
+					pwr_last_ns = now_ns;
+					//? un ciclo scartato solo per lo scarto degli intervalli tiene l'ultimo valore per al massimo 3 cicli,
+					//? cosi' il testo non sparisce e ricompare
+					static int sys_held = 0;
+					if (system) {
+						pwr_system_w = *system;
+						pwr_procs_w = cpu_sum + gpu_sum;
+						sys_held = 0;
+					}
+					else if (not (skewed and pwr_system_w >= 0 and ++sys_held <= 3)) {
+						pwr_system_w = pwr_procs_w = -1;
+						sys_held = 0;
+					}
+				}
+				else if (pwr_was_active) {
+					pwr_was_active = false;
+					energy_tracker = {};
+					pwr_last_ns = 0;
+					pwr_system_w = pwr_procs_w = -1;
+					for (auto& p : current_procs) {
+						p.pwr_cpu_w = p.pwr_gpu_w = p.pwr_w = -1;
+						p.pwr_cpu_unknown = p.pwr_partial = false;
+					}
 				}
 
 				//? Update the details info box for process if active

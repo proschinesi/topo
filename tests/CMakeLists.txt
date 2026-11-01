@@ -18,7 +18,7 @@ target_link_libraries(libbtop_test libbtop GTest::gtest_main)
 
 add_executable(btop_test cpu_names.cpp tools.cpp)
 if(APPLE)
-  # topo: parti pure di src/osx/apple_soc e ordinamento "gpu" (solo macOS)
+  # topo: parti pure di src/osx/apple_soc, ordinamenti "gpu" e "power" (solo macOS)
   target_sources(btop_test PRIVATE apple_soc.cpp proc_sort.cpp)
 endif()
 target_link_libraries(btop_test libbtop_test)
