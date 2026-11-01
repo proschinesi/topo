@@ -1538,6 +1538,7 @@ namespace Proc {
 
 	detail_container detailed;
 	static std::unordered_set<size_t> dead_procs;
+	static std::map<int, uint64_t> gpu_ns_pid; //? topo: tempo GPU per pid dell'ultima lettura dei client, per i dettagli
 
 	string get_status(char s) {
 		if (s & SRUN) return "Running";
@@ -1572,6 +1573,21 @@ namespace Proc {
 		if (detailed.entry.state != 'X') detailed.elapsed = sec_to_dhms(currentTime.tv_sec - (detailed.entry.cpu_s / 1'000'000));
 		else detailed.elapsed = sec_to_dhms(detailed.entry.death_time);
 		if (detailed.elapsed.size() > 8) detailed.elapsed.resize(detailed.elapsed.size() - 3);
+
+		//? topo: tempo GPU accumulato dai client del ciclo (vuoto = voce assente, mostrata da 1 s in su).
+		//? E' la somma dei soli client Metal aperti ora: i client chiusi escono dalla somma, che puo' quindi calare.
+		//? Se cambia presenza le etichette vanno ridisegnate.
+		{
+			const auto it = gpu_ns_pid.find(static_cast<int>(pid));
+			const uint64_t gpu_ns = gpu_active() and it != gpu_ns_pid.end() ? it->second : 0;
+			string gpu_time;
+			if (gpu_ns >= 1'000'000'000) {
+				gpu_time = sec_to_dhms(gpu_ns / 1'000'000'000);
+				if (gpu_time.size() > 8) gpu_time.resize(gpu_time.size() - 3);
+			}
+			if (gpu_time.empty() != detailed.gpu_time.empty()) redraw = true;
+			detailed.gpu_time = std::move(gpu_time);
+		}
 
 		//? Get parent process name
 		if (detailed.parent.empty()) {
@@ -1791,14 +1807,28 @@ namespace Proc {
 					}
 				}
 
-				//? topo: GPU% per processo dai client Metal (opzione proc_gpu, spenta di default)
-				if (Config::getB("proc_gpu")) {
-					static AppleSoc::Pure::GpuTimeTracker gpu_tracker;
-					const auto usage = gpu_tracker.feed(AppleSoc::gpu_clients(), static_cast<uint64_t>(timeNow) * 1000);
+				//? topo: GPU% per processo dai client Metal (opzione proc_gpu o ordinamento "gpu", spenta di default).
+				//? A ogni accensione il tracker riparte da zero: il primo ciclo fa solo da base, i valori arrivano dal
+				//? secondo (~2 cicli); allo spegnimento si azzera tutto, cosi' riaccendendo non restano valori vecchi
+				//? ne' una media su tutto il periodo spento.
+				static AppleSoc::Pure::GpuTimeTracker gpu_tracker;
+				static bool gpu_was_active = false;
+				if (gpu_active()) {
+					gpu_was_active = true;
+					const auto clients = AppleSoc::gpu_clients();
+					const auto usage = gpu_tracker.feed(clients, static_cast<uint64_t>(timeNow) * 1000);
+					//? stessa lettura per il tempo GPU dei dettagli; una lettura vuota (fallita) tiene la precedente
+					if (not clients.empty()) gpu_ns_pid = AppleSoc::Pure::gpu_ns_by_pid(clients);
 					for (auto& p : current_procs) {
 						auto it = usage.find(static_cast<int>(p.pid));
 						p.gpu_p = it != usage.end() ? it->second : -1;
 					}
+				}
+				else if (gpu_was_active) {
+					gpu_was_active = false;
+					gpu_tracker = {};
+					gpu_ns_pid.clear();
+					for (auto& p : current_procs) p.gpu_p = -1;
 				}
 
 				//? Update the details info box for process if active

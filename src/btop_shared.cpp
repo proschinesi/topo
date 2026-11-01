@@ -98,6 +98,17 @@ namespace Gpu {
 #endif
 
 namespace Proc {
+//? topo: ordinamento "gpu": i processi senza client GPU (-1) restano sempre in fondo, in entrambi i versi
+static bool gpu_before(double a, double b, bool reverse) {
+	if ((a < 0) != (b < 0)) return b < 0;
+	return reverse ? a < b : a > b;
+}
+
+//? topo: raccolta (e colonna) Gpu% attiva con l'opzione proc_gpu o con l'ordinamento "gpu"
+bool gpu_active() {
+	return Config::getB("proc_gpu") or Config::getS("proc_sorting") == "gpu";
+}
+
 bool set_priority(pid_t pid, int priority) {
   if (setpriority(PRIO_PROCESS, pid, priority) == 0) {
     return true;
@@ -116,6 +127,7 @@ bool set_priority(pid_t pid, int priority) {
 			case 5: rng::stable_sort(proc_vec, rng::less{}, &proc_info::mem); 		break;
 			case 6: rng::stable_sort(proc_vec, rng::less{}, &proc_info::cpu_p);		break;
 			case 7: rng::stable_sort(proc_vec, rng::less{}, &proc_info::cpu_c);		break;
+			case 8: rng::stable_sort(proc_vec, [](const auto& a, const auto& b) { return gpu_before(a.gpu_p, b.gpu_p, true); });	break; //? topo: "gpu"
 			}
 		}
 		else {
@@ -128,6 +140,7 @@ bool set_priority(pid_t pid, int priority) {
 			case 5: rng::stable_sort(proc_vec, rng::greater{}, &proc_info::mem); 		break;
 			case 6: rng::stable_sort(proc_vec, rng::greater{}, &proc_info::cpu_p);   	break;
 			case 7: rng::stable_sort(proc_vec, rng::greater{}, &proc_info::cpu_c);   	break;
+			case 8: rng::stable_sort(proc_vec, [](const auto& a, const auto& b) { return gpu_before(a.gpu_p, b.gpu_p, false); });	break; //? topo: "gpu"
 			}
 		}
 
@@ -157,6 +170,7 @@ bool set_priority(pid_t pid, int priority) {
 				case 5: rng::stable_sort(proc_vec, [](const auto& a, const auto& b) { return a.entry.get().mem < b.entry.get().mem; });	break;
 				case 6: rng::stable_sort(proc_vec, [](const auto& a, const auto& b) { return a.entry.get().cpu_p < b.entry.get().cpu_p; });	break;
 				case 7: rng::stable_sort(proc_vec, [](const auto& a, const auto& b) { return a.entry.get().cpu_c < b.entry.get().cpu_c; });	break;
+				case 8: rng::stable_sort(proc_vec, [](const auto& a, const auto& b) { return gpu_before(a.entry.get().gpu_p, b.entry.get().gpu_p, true); });	break; //? topo: "gpu"
 				}
 			}
 			else {
@@ -165,6 +179,7 @@ bool set_priority(pid_t pid, int priority) {
 				case 5: rng::stable_sort(proc_vec, [](const auto& a, const auto& b) { return a.entry.get().mem > b.entry.get().mem; });	break;
 				case 6: rng::stable_sort(proc_vec, [](const auto& a, const auto& b) { return a.entry.get().cpu_p > b.entry.get().cpu_p; });	break;
 				case 7: rng::stable_sort(proc_vec, [](const auto& a, const auto& b) { return a.entry.get().cpu_c > b.entry.get().cpu_c; });	break;
+				case 8: rng::stable_sort(proc_vec, [](const auto& a, const auto& b) { return gpu_before(a.entry.get().gpu_p, b.entry.get().gpu_p, false); });	break; //? topo: "gpu"
 				}
 			}
 		}
@@ -249,6 +264,7 @@ bool set_priority(pid_t pid, int priority) {
 					cur_proc.cpu_c += p.cpu_c;
 					cur_proc.mem += p.mem;
 					cur_proc.threads += p.threads;
+					if (p.gpu_p >= 0) cur_proc.gpu_p = std::max(cur_proc.gpu_p, 0.0) + p.gpu_p; //? topo: -1 resta solo se nessuno ha client
 				}
 				filter_found++;
 				p.filtered = true;
@@ -258,6 +274,7 @@ bool set_priority(pid_t pid, int priority) {
 				cur_proc.cpu_c += p.cpu_c;
 				cur_proc.mem += p.mem;
 				cur_proc.threads += p.threads;
+				if (p.gpu_p >= 0) cur_proc.gpu_p = std::max(cur_proc.gpu_p, 0.0) + p.gpu_p; //? topo: -1 resta solo se nessuno ha client
 			}
 		}
 	}
@@ -347,6 +364,9 @@ const vector<string> Proc::sort_vector = {
 	"memory",
 	"cpu direct",
 	"cpu lazy",
+#ifdef __APPLE__
+	"gpu", //? topo: GPU% per processo (Apple Silicon), indice 8
+#endif
 };
 
 const std::unordered_map<char, string> Proc::proc_states = {

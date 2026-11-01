@@ -166,6 +166,13 @@ namespace AppleSoc::Pure {
 		return out;
 	}
 
+	auto gpu_ns_by_pid(const std::vector<GpuClient>& clients) -> std::map<int, uint64_t> {
+		std::map<int, uint64_t> out;
+		for (const auto& c : clients)
+			if (c.pid > 0) out[c.pid] += c.gpu_ns;
+		return out;
+	}
+
 	auto parse_creator_pid(std::string_view creator) -> std::optional<int> {
 		if (not creator.starts_with("pid ")) return std::nullopt;
 		creator.remove_prefix(4);

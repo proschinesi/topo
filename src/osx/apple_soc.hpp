@@ -180,6 +180,8 @@ namespace AppleSoc {
 			std::map<uint64_t, uint64_t> prev_; //? id client -> ns
 			uint64_t prev_ns_ = 0;
 		};
+		//? topo: tempo GPU accumulato per pid, somma dei client dello stesso pid (pid <= 0 ignorati)
+		auto gpu_ns_by_pid(const std::vector<GpuClient>& clients) -> std::map<int, uint64_t>;
 		//? "pid 402, WindowServer" -> 402
 		auto parse_creator_pid(std::string_view creator) -> std::optional<int>;
 

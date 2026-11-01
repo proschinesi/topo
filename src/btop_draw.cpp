@@ -2064,7 +2064,7 @@ namespace Proc {
 			//? topo: colonna Gpu% (5 + spazio), presa dal comando o dal nome del programma
 			gpu_size = 0;
 		#ifdef __APPLE__
-			if (Config::getB("proc_gpu") and width >= 60) {
+			if (gpu_active() and width >= 60) {
 				gpu_size = 5;
 				if (cmd_size > 6) cmd_size -= gpu_size + 1;
 				else prog_size -= gpu_size + 1;
@@ -2127,17 +2127,20 @@ namespace Proc {
 				}
 
 				//? Labels
+				//? topo: voce GPU: dopo Elapsed: solo con tempo GPU (fino a 9 voci, le finali cadono per prime)
+				const int gi = detailed.gpu_time.empty() ? 0 : 1;
 				const int item_fit = floor((double)(d_width - 2) / 10);
-				const int item_width = floor((double)(d_width - 2) / min(item_fit, 8));
+				const int item_width = floor((double)(d_width - 2) / min(item_fit, 8 + gi));
 				out += Mv::to(d_y + 1, d_x + 1) + Fx::b + Theme::c("title")
 										+ cjust("Status:", item_width)
 										+ cjust("Elapsed:", item_width);
-				if (item_fit >= 3) out += cjust("IO/R:", item_width);
-				if (item_fit >= 4) out += cjust("IO/W:", item_width);
-				if (item_fit >= 5) out += cjust("Parent:", item_width);
-				if (item_fit >= 6) out += cjust("User:", item_width);
-				if (item_fit >= 7) out += cjust("Threads:", item_width);
-				if (item_fit >= 8) out += cjust("Nice:", item_width);
+				if (gi and item_fit >= 3) out += cjust("GPU:", item_width);
+				if (item_fit >= 3 + gi) out += cjust("IO/R:", item_width);
+				if (item_fit >= 4 + gi) out += cjust("IO/W:", item_width);
+				if (item_fit >= 5 + gi) out += cjust("Parent:", item_width);
+				if (item_fit >= 6 + gi) out += cjust("User:", item_width);
+				if (item_fit >= 7 + gi) out += cjust("Threads:", item_width);
+				if (item_fit >= 8 + gi) out += cjust("Nice:", item_width);
 
 
 				//? Command line
@@ -2258,8 +2261,9 @@ namespace Proc {
 		//? Draw details box if shown
 		if (show_detailed) {
 			bool alive = detailed.status != "Dead";
+			const int gi = detailed.gpu_time.empty() ? 0 : 1; //? topo: voce GPU: (vedi etichette)
 			const int item_fit = floor((double)(d_width - 2) / 10);
-			const int item_width = floor((double)(d_width - 2) / min(item_fit, 8));
+			const int item_width = floor((double)(d_width - 2) / min(item_fit, 8 + gi));
 
 			//? Graph part of box
 			fmt::format_to(std::back_inserter(out), "{move}{unbold}{graph}{move}{fg_color}{bold}{cpu_str}%",
@@ -2274,12 +2278,13 @@ namespace Proc {
 			out += Mv::to(d_y + 2, d_x + 1) + stat_color + Fx::ub
 									+ cjust(detailed.status, item_width) + Theme::c("main_fg")
 									+ cjust(detailed.elapsed, item_width);
-			if (item_fit >= 3) out += cjust(detailed.io_read, item_width);
-			if (item_fit >= 4) out += cjust(detailed.io_write, item_width);
-			if (item_fit >= 5) out += cjust(detailed.parent, item_width, true);
-			if (item_fit >= 6) out += cjust(detailed.entry.user, item_width, true);
-			if (item_fit >= 7) out += cjust(to_string(detailed.entry.threads), item_width);
-			if (item_fit >= 8) out += cjust(to_string(detailed.entry.p_nice), item_width);
+			if (gi and item_fit >= 3) out += cjust(detailed.gpu_time, item_width);
+			if (item_fit >= 3 + gi) out += cjust(detailed.io_read, item_width);
+			if (item_fit >= 4 + gi) out += cjust(detailed.io_write, item_width);
+			if (item_fit >= 5 + gi) out += cjust(detailed.parent, item_width, true);
+			if (item_fit >= 6 + gi) out += cjust(detailed.entry.user, item_width, true);
+			if (item_fit >= 7 + gi) out += cjust(to_string(detailed.entry.threads), item_width);
+			if (item_fit >= 8 + gi) out += cjust(to_string(detailed.entry.p_nice), item_width);
 
 
 			const double mem_p = detailed.mem_bytes.back() * 100.0 / totalMem;

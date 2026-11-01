@@ -455,6 +455,9 @@ namespace Proc {
 	//? Contains the valid sorting options for processes
 	extern const vector<string> sort_vector;
 
+	//? topo: true se la raccolta Gpu% per processo e' attiva (opzione proc_gpu o ordinamento "gpu")
+	bool gpu_active();
+
 	//? Translation from process state char to explanative string
 	extern const std::unordered_map<char, string> proc_states;
 
@@ -490,6 +493,7 @@ namespace Proc {
 		bool skip_smaps{};
 		proc_info entry;
 		string elapsed, parent, status, io_read, io_write, memory;
+		string gpu_time; //? topo: tempo GPU accumulato (Apple Silicon), vuoto se raccolta spenta o 0
 		long long first_mem = -1;
 		deque<long long> cpu_percent;
 		deque<long long> mem_bytes;

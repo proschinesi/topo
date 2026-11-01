@@ -395,6 +395,21 @@ TEST(apple_soc, gpu_time_tracker) {
 	EXPECT_NEAR(u.at(100), 0.0, 1e-9);
 }
 
+TEST(apple_soc, gpu_ns_by_pid) {
+	using C = AppleSoc::GpuClient;
+	EXPECT_TRUE(gpu_ns_by_pid({}).empty());
+	// piu' client dello stesso pid si sommano; pid <= 0 ignorati; un pid con 0 ns resta (vale 0)
+	auto m = gpu_ns_by_pid({C{1, 100, 300}, C{2, 200, 0}, C{3, 100, 700}, C{4, -1, 999}, C{5, 0, 5}});
+	EXPECT_EQ(m.size(), 2u);
+	EXPECT_EQ(m.at(100), 1000u);
+	EXPECT_EQ(m.at(200), 0u);
+	EXPECT_FALSE(m.contains(-1));
+	EXPECT_FALSE(m.contains(0));
+	// valori grandi (mesi di tempo GPU in ns) senza sconfinamenti
+	m = gpu_ns_by_pid({C{1, 7, 5'000'000'000'000'000}, C{2, 7, 5'000'000'000'000'000}});
+	EXPECT_EQ(m.at(7), 10'000'000'000'000'000u);
+}
+
 TEST(apple_soc, held_value_bridges_short_gaps_only) {
 	HeldValue h;
 	EXPECT_FALSE(h.feed(std::nullopt).has_value());

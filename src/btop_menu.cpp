@@ -861,6 +861,11 @@ namespace Menu {
 				"\"pid\", \"program\", \"arguments\", \"threads\",",
 				"\"user\", \"memory\", \"cpu lazy\" and",
 				"\"cpu direct\".",
+			#ifdef __APPLE__
+				"",
+				"\"gpu\" (Apple Silicon) sorts by Gpu%",
+				"and shows its column.",
+			#endif
 				"",
 				"\"cpu lazy\" updates top process over time.",
 				"\"cpu direct\" updates top process",

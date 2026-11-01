@@ -106,6 +106,13 @@ The configuration file is _~/.config/topo/topo.conf_ (or _$XDG_CONFIG_HOME/topo/
 **proc_gpu** (default false)
 :   Show a Gpu% column in the process list.
 
+**proc_sorting** = "gpu"
+:   Sort the process list by Gpu%; it turns the GPU collection on even with proc_gpu off (about 2 ms of CPU per
+    update, values from the second cycle). The column needs a proc box at least 60 columns wide; the sorting works
+    without it. Processes without GPU clients stay at the bottom. While the collection is on, the process details
+    show GPU: (accumulated GPU time) for processes with at least 1 s: the sum of the Metal clients open now, so it
+    can go down when a client closes.
+
 # FILES
 
 _~/.config/topo/topo.conf_

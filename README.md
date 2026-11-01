@@ -21,7 +21,7 @@ per-component power, CPU clusters, GPU frequency and temperature, DRAM bandwidth
   thermal state.
 - **mem box**: DRAM bandwidth (`DRAM BW x GB/s`), or the estimate `DRAM BW ~x GB/s (est.)` where the direct counter
   is not available.
-- **proc box**: optional per-process `Gpu%` column.
+- **proc box**: optional per-process `Gpu%` column and sorting `gpu`; `GPU:` time in the process details.
 - `--dump-soc`: one SoC sample per line as JSON, with the data source of every value.
 
 Where a value is not available topo shows `—`, never a fake 0.
@@ -109,7 +109,8 @@ seconds (a build, a video, a game), so that the power cross-check described belo
 | Estimated DRAM bandwidth | PMP `DCS BW` histograms | **estimate**, shown with `~` and `(est.)` |
 | ANE usage `~x%` | PMP "floor" requests of the ANE | **estimate**, not a measured utilization |
 | Thermal state | `NSProcessInfo.thermalState` | nominal, fair, serious, critical |
-| Per-process GPU | IORegistry `AGXDeviceUserClient`, `accumulatedGPUTime` | delta between samples, option `proc_gpu` |
+| Per-process GPU | IORegistry `AGXDeviceUserClient`, `accumulatedGPUTime` | delta between samples, option `proc_gpu` or sorting `gpu` |
+| Per-process GPU time | same clients, sum of `accumulatedGPUTime` per pid | only the clients open now: it can go down when a client closes |
 | SoC total | CPU + GPU + ANE + DRAM | a sum, not a measurement |
 
 **macOS 27 and CLPC.** On macOS 27 Apple stopped updating the CPU/ANE/DRAM counters of the Energy Model (they stay
@@ -156,6 +157,13 @@ topo --dump-soc --count 5 --interval 500 # five samples, 500 ms apart
 | `pwr_graphs` | `true` | gpu | one-line graphs in the pwr box; `false` = numbers only |
 | `dram_bw_estimate` | `true` | mem | show the PMP estimate of DRAM bandwidth when the direct counter is missing |
 | `proc_gpu` | `false` | proc | `Gpu%` column in the proc box (about 2 ms of CPU per update); a GPU client that just appeared counts from the next cycle |
+
+`proc_sorting = "gpu"` (also with the arrow keys in the proc box) sorts by `Gpu%` and turns the collection on even
+with `proc_gpu` off (same ~2 ms per update); values arrive from the second cycle. Processes without GPU clients stay
+at the bottom in both orders. The column needs a proc box at least 60 columns wide; below that the sorting still
+works without it. While the collection is on, the process details show `GPU:` (accumulated GPU time, same format as
+`Elapsed:`) after `Elapsed:` for processes with at least 1 s of GPU time: it is the sum of the Metal clients open now,
+so it leaves out the clients already closed and can go down.
 
 The PMP histograms (estimates) are sampled only when something displays them.
 
