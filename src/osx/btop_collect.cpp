@@ -83,6 +83,17 @@ using std::clamp, std::string_literals::operator""s, std::cmp_equal, std::cmp_le
 using std::ifstream, std::numeric_limits, std::streamsize, std::round, std::max, std::min;
 namespace fs = std::filesystem;
 namespace rng = std::ranges;
+
+//? topo: memoria usata come Monitoraggio Attivita' = app (interne - purgeable) + wired + compressa.
+//? Unica funzione per pannello mem e unified memory GPU; interi con segno, clamp a [0, totale].
+static int64_t topo_used_bytes(const vm_statistics64& v, int64_t page_size, int64_t total) {
+	int64_t pages = (static_cast<int64_t>(v.internal_page_count) - static_cast<int64_t>(v.purgeable_count))
+		+ static_cast<int64_t>(v.wire_count) + static_cast<int64_t>(v.compressor_page_count);
+	int64_t used = pages * page_size;
+	if (used < 0) used = 0;
+	if (total > 0 and used > total) used = total;
+	return used;
+}
 using namespace Tools;
 
 //? RAII wrapper for CoreFoundation types — releases via CFRelease() on destruction
@@ -326,14 +337,7 @@ namespace Gpu {
 				host_page_size(mach_port, &page_size);
 
 				if (host_statistics64(mach_port, HOST_VM_INFO64, (host_info64_t)&vm_stats, &count) == KERN_SUCCESS) {
-					long long used = (static_cast<int64_t>(vm_stats.active_count)
-						+ static_cast<int64_t>(vm_stats.inactive_count)
-						+ static_cast<int64_t>(vm_stats.wire_count)
-						+ static_cast<int64_t>(vm_stats.speculative_count)
-						+ static_cast<int64_t>(vm_stats.compressor_page_count)
-						- static_cast<int64_t>(vm_stats.purgeable_count)
-						- static_cast<int64_t>(vm_stats.external_page_count)) * static_cast<int64_t>(page_size);
-					if (used < 0) used = 0;
+					long long used = topo_used_bytes(vm_stats, static_cast<int64_t>(page_size), static_cast<int64_t>(gpus_slice[0].mem_total));
 					gpus_slice[0].mem_used = used;
 					if (gpus_slice[0].mem_total > 0) {
 						auto used_pct = static_cast<long long>(round(static_cast<double>(used) * 100.0 / static_cast<double>(gpus_slice[0].mem_total)));
@@ -1115,8 +1119,9 @@ namespace Mem {
 		mach_msg_type_number_t info_size = HOST_VM_INFO64_COUNT;
 		if (host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t)&p, &info_size) == 0) {
 			mem.stats.at("free") = p.free_count * Shared::pageSize;
-			mem.stats.at("cached") = p.external_page_count * Shared::pageSize;
-			mem.stats.at("used") = (p.active_count + p.wire_count) * Shared::pageSize;
+			//? topo: cache file come Monitoraggio Attivita' (file + purgeable); used con helper condiviso
+			mem.stats.at("cached") = (static_cast<uint64_t>(p.external_page_count) + p.purgeable_count) * Shared::pageSize;
+			mem.stats.at("used") = topo_used_bytes(p, static_cast<int64_t>(Shared::pageSize), static_cast<int64_t>(Shared::totalMem));
 			mem.stats.at("available") = Shared::totalMem - mem.stats.at("used");
 		}
 
