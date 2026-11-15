@@ -59,7 +59,7 @@ using namespace std::literals; // for operator""s
 #define APP_NAME "topo"
 #endif
 #ifndef APP_VERSION
-#define APP_VERSION "0.2.0"
+#define APP_VERSION "0.2.1"
 #endif
 
 namespace Tools {
